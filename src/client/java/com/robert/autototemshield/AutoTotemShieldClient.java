@@ -11,9 +11,21 @@ import net.minecraft.world.item.Items;
 
 public class AutoTotemShieldClient implements ClientModInitializer {
 
+    /*
+     * 1 Minecraft tick = 50ms.
+     *
+     * This gives Minecraft one tick to finish an inventory
+     * change without adding a noticeable delay.
+     */
+    private static final int SAFETY_DELAY_TICKS = 1;
+
     private boolean shieldWasSwapped = false;
     private int tickDelay = 0;
 
+    /*
+     * The exact shield that was in the offhand before
+     * the emergency Totem swap.
+     */
     private ItemStack savedShield = ItemStack.EMPTY;
 
     @Override
@@ -27,10 +39,16 @@ public class AutoTotemShieldClient implements ClientModInitializer {
             return;
         }
 
+        /*
+         * Mod disabled.
+         */
         if (!AutoTotemShieldConfig.enabled) {
             return;
         }
 
+        /*
+         * Small safety delay after an inventory operation.
+         */
         if (tickDelay > 0) {
             tickDelay--;
             return;
@@ -40,8 +58,13 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
         float health = player.getHealth();
 
-        // Config uses hearts.
-        // Minecraft health uses half-hearts.
+        /*
+         * Config uses hearts.
+         *
+         * Minecraft uses half-hearts.
+         *
+         * 3 hearts = 6 health.
+         */
         float healthThreshold =
                 (float) (AutoTotemShieldConfig.triggerHearts * 2.0);
 
@@ -49,44 +72,60 @@ public class AutoTotemShieldClient implements ClientModInitializer {
                 player.getItemBySlot(EquipmentSlot.OFFHAND);
 
         /*
+         * =========================================================
          * LOW HEALTH
+         * =========================================================
          */
         if (health <= healthThreshold) {
 
             /*
-             * Only start the emergency swap if the player
-             * currently has a shield in the offhand.
+             * We have not started the emergency Totem state yet.
              */
-            if (AutoTotemShieldConfig.shieldRequired) {
+            if (!shieldWasSwapped) {
 
-                if (offhand.is(Items.SHIELD) && !shieldWasSwapped) {
+                /*
+                 * Shield Required ON:
+                 *
+                 * Only activate when a shield is in the offhand.
+                 */
+                if (AutoTotemShieldConfig.shieldRequired) {
 
-                    if (swapOffhandWithFirstTotem(player)) {
+                    if (offhand.is(Items.SHIELD)) {
 
-                        shieldWasSwapped = true;
-                        tickDelay = AutoTotemShieldConfig.swapDelay;
+                        if (swapShieldForTotem(player)) {
+
+                            shieldWasSwapped = true;
+                            tickDelay = SAFETY_DELAY_TICKS;
+                        }
                     }
                 }
 
-            } else {
-
                 /*
-                 * If Shield Required is disabled, the mod can
-                 * place a Totem into an empty/non-totem offhand.
+                 * Shield Required OFF:
+                 *
+                 * Put a Totem into the offhand even if there
+                 * isn't currently a shield there.
                  */
-                if (!offhand.is(Items.TOTEM_OF_UNDYING)
-                        && !shieldWasSwapped) {
+                else {
 
-                    if (putFirstTotemInOffhand(player)) {
+                    if (!offhand.is(Items.TOTEM_OF_UNDYING)) {
 
-                        shieldWasSwapped = true;
-                        tickDelay = AutoTotemShieldConfig.swapDelay;
+                        if (putFirstTotemInOffhand(player)) {
+
+                            shieldWasSwapped = true;
+                            tickDelay = SAFETY_DELAY_TICKS;
+                        }
                     }
                 }
             }
 
             /*
-             * Restock the Totem if it gets consumed.
+             * =====================================================
+             * RESTOCK
+             * =====================================================
+             *
+             * If our Totem was consumed while we're still below
+             * the health threshold, immediately search for another.
              */
             if (shieldWasSwapped
                     && AutoTotemShieldConfig.restockTotem) {
@@ -94,55 +133,80 @@ public class AutoTotemShieldClient implements ClientModInitializer {
                 offhand =
                         player.getItemBySlot(EquipmentSlot.OFFHAND);
 
-                if (!offhand.is(Items.TOTEM_OF_UNDYING)) {
+                /*
+                 * The Totem has disappeared.
+                 *
+                 * Only restock when the offhand is EMPTY.
+                 *
+                 * This prevents the mod from overwriting something
+                 * the player deliberately put there.
+                 */
+                if (offhand.isEmpty()) {
 
                     if (putFirstTotemInOffhand(player)) {
-                        tickDelay = AutoTotemShieldConfig.swapDelay;
+                        tickDelay = SAFETY_DELAY_TICKS;
                     }
                 }
             }
 
+            return;
         }
 
         /*
-         * SAFE AGAIN
+         * =========================================================
+         * HEALTH SAFE AGAIN
+         * =========================================================
          */
-        else if (shieldWasSwapped) {
+        if (shieldWasSwapped) {
 
             offhand =
                     player.getItemBySlot(EquipmentSlot.OFFHAND);
 
+            /*
+             * Return the original shield if enabled.
+             */
             if (AutoTotemShieldConfig.returnToShield) {
 
+                /*
+                 * Only restore if the offhand is still occupied
+                 * by our Totem or is empty.
+                 */
                 if (offhand.is(Items.TOTEM_OF_UNDYING)
                         || offhand.isEmpty()) {
 
                     if (putShieldBack(player)) {
 
                         shieldWasSwapped = false;
-                        tickDelay = AutoTotemShieldConfig.swapDelay;
+                        tickDelay = SAFETY_DELAY_TICKS;
                     }
-
-                } else {
-
-                    /*
-                     * Something else is in the offhand.
-                     * Don't overwrite it.
-                     */
-                    shieldWasSwapped = false;
                 }
 
-            } else {
+                else {
 
-                /*
-                 * Return-to-shield disabled.
-                 */
+                    /*
+                     * Player manually changed the offhand.
+                     * Respect their choice.
+                     */
+                    shieldWasSwapped = false;
+                    savedShield = ItemStack.EMPTY;
+                }
+            }
+
+            /*
+             * Return-to-shield disabled.
+             */
+            else {
                 shieldWasSwapped = false;
             }
         }
     }
 
-    private boolean swapOffhandWithFirstTotem(Player player) {
+    /*
+     * =============================================================
+     * SHIELD -> TOTEM
+     * =============================================================
+     */
+    private boolean swapShieldForTotem(Player player) {
 
         Inventory inv = player.getInventory();
 
@@ -152,15 +216,19 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
             if (stack.is(Items.TOTEM_OF_UNDYING)) {
 
-                ItemStack shield =
+                /*
+                 * Save the exact shield, including durability.
+                 */
+                savedShield =
                         player.getItemBySlot(
                                 EquipmentSlot.OFFHAND
                         ).copy();
 
+                /*
+                 * Take exactly one Totem.
+                 */
                 ItemStack totem = stack.copy();
                 totem.setCount(1);
-
-                savedShield = shield;
 
                 stack.shrink(1);
 
@@ -176,12 +244,20 @@ public class AutoTotemShieldClient implements ClientModInitializer {
         return false;
     }
 
+    /*
+     * =============================================================
+     * FIND TOTEM
+     * =============================================================
+     */
     private boolean putFirstTotemInOffhand(Player player) {
 
         Inventory inv = player.getInventory();
 
         int totalTotems = 0;
 
+        /*
+         * Count all Totems in the inventory.
+         */
         for (int i = 0; i < inv.getContainerSize(); i++) {
 
             ItemStack stack = inv.getItem(i);
@@ -192,18 +268,21 @@ public class AutoTotemShieldClient implements ClientModInitializer {
         }
 
         /*
-         * Minimum Totems setting.
+         * Respect Minimum Totems.
          *
-         * Example:
-         * Minimum Totems = 2
+         * Minimum Totems = 0:
+         * Take a Totem whenever one is available.
          *
-         * The mod will leave at least 2 Totems in the
-         * inventory before taking another one.
+         * Minimum Totems = 2:
+         * Leave at least 2 Totems in the inventory.
          */
         if (totalTotems <= AutoTotemShieldConfig.minimumTotems) {
             return false;
         }
 
+        /*
+         * Find the first Totem.
+         */
         for (int i = 0; i < inv.getContainerSize(); i++) {
 
             ItemStack stack = inv.getItem(i);
@@ -227,6 +306,11 @@ public class AutoTotemShieldClient implements ClientModInitializer {
         return false;
     }
 
+    /*
+     * =============================================================
+     * TOTEM -> SHIELD
+     * =============================================================
+     */
     private boolean putShieldBack(Player player) {
 
         if (savedShield.isEmpty()) {
@@ -241,7 +325,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
                 );
 
         /*
-         * Find an empty inventory slot for the Totem.
+         * First try to put the current Totem into an empty slot.
          */
         for (int i = 0; i < inv.getContainerSize(); i++) {
 
@@ -261,7 +345,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
         }
 
         /*
-         * Inventory completely full.
+         * Inventory is completely full.
          *
          * Swap the Totem with the selected hotbar slot.
          */
