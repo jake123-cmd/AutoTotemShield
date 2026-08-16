@@ -29,154 +29,97 @@ public class AutoTotemShieldConfigScreen extends Screen {
         int y = 40;
 
         enabledButton = addButton(
-                getEnabledText(),
-                centerX,
-                y,
+                getEnabledText(), centerX, y,
                 button -> {
-                    AutoTotemShieldConfig.enabled =
-                            !AutoTotemShieldConfig.enabled;
+                    AutoTotemShieldConfig.enabled = !AutoTotemShieldConfig.enabled;
                     button.setMessage(getEnabledText());
-                }
-        );
-
+                });
         y += 24;
 
         triggerHealthButton = addButton(
-                getTriggerHealthText(),
-                centerX,
-                y,
+                getTriggerHealthText(), centerX, y,
                 button -> {
                     AutoTotemShieldConfig.triggerHearts += 0.5;
-
                     if (AutoTotemShieldConfig.triggerHearts > 10.0) {
                         AutoTotemShieldConfig.triggerHearts = 0.5;
                     }
-
                     button.setMessage(getTriggerHealthText());
-                }
-        );
-
+                });
         y += 24;
 
         restockButton = addButton(
-                getRestockText(),
-                centerX,
-                y,
+                getRestockText(), centerX, y,
                 button -> {
-                    AutoTotemShieldConfig.restockTotem =
-                            !AutoTotemShieldConfig.restockTotem;
+                    AutoTotemShieldConfig.restockTotem = !AutoTotemShieldConfig.restockTotem;
                     button.setMessage(getRestockText());
-                }
-        );
-
+                });
         y += 24;
 
         returnShieldButton = addButton(
-                getReturnShieldText(),
-                centerX,
-                y,
+                getReturnShieldText(), centerX, y,
                 button -> {
-                    AutoTotemShieldConfig.returnToShield =
-                            !AutoTotemShieldConfig.returnToShield;
+                    AutoTotemShieldConfig.returnToShield = !AutoTotemShieldConfig.returnToShield;
                     button.setMessage(getReturnShieldText());
-                }
-        );
-
+                });
         y += 24;
 
         shieldRequiredButton = addButton(
-                getShieldRequiredText(),
-                centerX,
-                y,
+                getShieldRequiredText(), centerX, y,
                 button -> {
-                    AutoTotemShieldConfig.shieldRequired =
-                            !AutoTotemShieldConfig.shieldRequired;
+                    AutoTotemShieldConfig.shieldRequired = !AutoTotemShieldConfig.shieldRequired;
                     button.setMessage(getShieldRequiredText());
-                }
-        );
-
+                });
         y += 24;
 
         minimumTotemsButton = addButton(
-                getMinimumTotemsText(),
-                centerX,
-                y,
+                getMinimumTotemsText(), centerX, y,
                 button -> {
                     AutoTotemShieldConfig.minimumTotems++;
-
                     if (AutoTotemShieldConfig.minimumTotems > 10) {
                         AutoTotemShieldConfig.minimumTotems = 0;
                     }
-
                     button.setMessage(getMinimumTotemsText());
-                }
-        );
-
+                });
         y += 24;
 
         swapDelayButton = addButton(
-                getSwapDelayText(),
-                centerX,
-                y,
+                getSwapDelayText(), centerX, y,
                 button -> {
                     AutoTotemShieldConfig.swapDelay++;
-
                     if (AutoTotemShieldConfig.swapDelay > 20) {
                         AutoTotemShieldConfig.swapDelay = 0;
                     }
-
                     button.setMessage(getSwapDelayText());
-                }
-        );
-
+                });
         y += 24;
 
         debugButton = addButton(
-                getDebugText(),
-                centerX,
-                y,
+                getDebugText(), centerX, y,
                 button -> {
-                    AutoTotemShieldConfig.debugMessages =
-                            !AutoTotemShieldConfig.debugMessages;
+                    AutoTotemShieldConfig.debugMessages = !AutoTotemShieldConfig.debugMessages;
                     button.setMessage(getDebugText());
-                }
-        );
-
+                });
         y += 32;
 
         this.addRenderableWidget(
-                Button.builder(
-                        Component.literal("Reset to Defaults"),
-                        button -> {
-                            AutoTotemShieldConfig.resetToDefaults();
-
-                            updateButtonTexts();
-                        }
-                ).bounds(centerX - 100, y, 200, 20).build()
-        );
-
+                Button.builder(Component.literal("Reset to Defaults"), button -> {
+                    AutoTotemShieldConfig.resetToDefaults();
+                    updateButtonTexts();
+                }).bounds(centerX - 100, y, 200, 20).build());
         y += 24;
 
         this.addRenderableWidget(
-                Button.builder(
-                        Component.literal("Done"),
-                        button -> this.minecraft.setScreen(parent)
-                ).bounds(centerX - 100, y, 200, 20).build()
-        );
+                Button.builder(Component.literal("Done"), button -> this.minecraft.setScreen(parent))
+                        .bounds(centerX - 100, y, 200, 20).build());
     }
 
     private Button addButton(
             Component text,
             int centerX,
             int y,
-            java.util.function.Consumer<Button> action
-    ) {
+            java.util.function.Consumer<Button> action) {
         return this.addRenderableWidget(
-                Button.builder(
-                        text,
-                        action
-                ).bounds(centerX - 100, y, 200, 20).build()
-        );
+                Button.builder(text, action).bounds(centerX - 100, y, 200, 20).build());
     }
 
     private void updateButtonTexts() {
@@ -191,80 +134,41 @@ public class AutoTotemShieldConfigScreen extends Screen {
     }
 
     private Component getEnabledText() {
-        return Component.literal(
-                "Enable Mod: " +
-                        (AutoTotemShieldConfig.enabled ? "ON" : "OFF")
-        );
+        return Component.literal("Enable Mod: " + (AutoTotemShieldConfig.enabled ? "ON" : "OFF"));
     }
 
     private Component getTriggerHealthText() {
-        return Component.literal(
-                "Trigger Health: " +
-                        AutoTotemShieldConfig.triggerHearts +
-                        " hearts"
-        );
+        return Component.literal("Trigger Health: " + AutoTotemShieldConfig.triggerHearts + " hearts");
     }
 
     private Component getRestockText() {
-        return Component.literal(
-                "Restock Totem: " +
-                        (AutoTotemShieldConfig.restockTotem ? "ON" : "OFF")
-        );
+        return Component.literal("Restock Totem: " + (AutoTotemShieldConfig.restockTotem ? "ON" : "OFF"));
     }
 
     private Component getReturnShieldText() {
-        return Component.literal(
-                "Return to Shield: " +
-                        (AutoTotemShieldConfig.returnToShield ? "ON" : "OFF")
-        );
+        return Component.literal("Return to Shield: " + (AutoTotemShieldConfig.returnToShield ? "ON" : "OFF"));
     }
 
     private Component getShieldRequiredText() {
-        return Component.literal(
-                "Shield Required: " +
-                        (AutoTotemShieldConfig.shieldRequired ? "ON" : "OFF")
-        );
+        return Component.literal("Shield Required: " + (AutoTotemShieldConfig.shieldRequired ? "ON" : "OFF"));
     }
 
     private Component getMinimumTotemsText() {
-        return Component.literal(
-                "Minimum Totems: " +
-                        AutoTotemShieldConfig.minimumTotems
-        );
+        return Component.literal("Minimum Totems: " + AutoTotemShieldConfig.minimumTotems);
     }
 
     private Component getSwapDelayText() {
-        return Component.literal(
-                "Swap Delay: " +
-                        AutoTotemShieldConfig.swapDelay +
-                        " ticks"
-        );
+        return Component.literal("Swap Delay: " + AutoTotemShieldConfig.swapDelay + " ticks");
     }
 
     private Component getDebugText() {
-        return Component.literal(
-                "Debug Messages: " +
-                        (AutoTotemShieldConfig.debugMessages ? "ON" : "OFF")
-        );
+        return Component.literal("Debug Messages: " + (AutoTotemShieldConfig.debugMessages ? "ON" : "OFF"));
     }
 
     @Override
-    public void render(
-            GuiGraphics guiGraphics,
-            int mouseX,
-            int mouseY,
-            float partialTick
-    ) {
+    public void render(GuiGraphics guiGraphics, int mouseX, int mouseY, float partialTick) {
         this.renderBackground(guiGraphics, mouseX, mouseY, partialTick);
-
-        guiGraphics.drawCenteredString(
-                this.font,
-                this.title,
-                this.width / 2,
-                15,
-                0xFFFFFF
-        );
-
+        guiGraphics.drawCenteredString(this.font, this.title, this.width / 2, 15, 0xFFFFFF);
         super.render(guiGraphics, mouseX, mouseY, partialTick);
     }
 }
