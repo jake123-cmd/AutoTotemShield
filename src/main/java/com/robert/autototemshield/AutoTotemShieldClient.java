@@ -5,16 +5,16 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.minecraft.client.Minecraft;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.player.Inventory;
-import net.minecraft.world.item.Item;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 
 public class AutoTotemShieldClient implements ClientModInitializer {
-    private static final float HEALTH_THRESHOLD = 6.0f; // 3 hearts
-    private static final int SWAP_DELAY_TICKS = 0;
 
     private boolean shieldWasSwapped = false;
     private int tickDelay = 0;
+
+    private ItemStack savedShield = ItemStack.EMPTY;
 
     @Override
     public void onInitializeClient() {
@@ -22,105 +22,262 @@ public class AutoTotemShieldClient implements ClientModInitializer {
     }
 
     private void tick(Minecraft client) {
-        if (client.player == null || client.level == null) return;
+
+        if (client.player == null || client.level == null) {
+            return;
+        }
+
+        if (!AutoTotemShieldConfig.enabled) {
+            return;
+        }
+
         if (tickDelay > 0) {
             tickDelay--;
             return;
         }
 
-        float health = client.player.getHealth();
-        ItemStack offhand = client.player.getItemBySlot(EquipmentSlot.OFFHAND);
+        Player player = client.player;
 
-        if (health <= HEALTH_THRESHOLD) {
-            // At 3 hearts or below: if a shield is equipped, replace it with a totem.
-            if (offhand.is(Items.SHIELD) && !shieldWasSwapped) {
-                if (swapOffhandWithFirstTotem(client.player)) {
-                    shieldWasSwapped = true;
-                    tickDelay = SWAP_DELAY_TICKS;
-                }
-            }
+        float health = player.getHealth();
 
-            // If our totem was consumed, replenish it while still dangerous.
-            offhand = client.player.getItemBySlot(EquipmentSlot.OFFHAND);
-            if (shieldWasSwapped && !offhand.is(Items.TOTEM_OF_UNDYING)) {
-                if (putFirstTotemInOffhand(client.player)) {
-                    tickDelay = SWAP_DELAY_TICKS;
+        // Config uses hearts.
+        // Minecraft health uses half-hearts.
+        float healthThreshold =
+                (float) (AutoTotemShieldConfig.triggerHearts * 2.0);
+
+        ItemStack offhand =
+                player.getItemBySlot(EquipmentSlot.OFFHAND);
+
+        /*
+         * LOW HEALTH
+         */
+        if (health <= healthThreshold) {
+
+            /*
+             * Only start the emergency swap if the player
+             * currently has a shield in the offhand.
+             */
+            if (AutoTotemShieldConfig.shieldRequired) {
+
+                if (offhand.is(Items.SHIELD) && !shieldWasSwapped) {
+
+                    if (swapOffhandWithFirstTotem(player)) {
+
+                        shieldWasSwapped = true;
+                        tickDelay = AutoTotemShieldConfig.swapDelay;
+                    }
                 }
-            }
-        } else if (shieldWasSwapped) {
-            // Safe again: restore the original shield if a totem is currently in hand.
-            offhand = client.player.getItemBySlot(EquipmentSlot.OFFHAND);
-            if (offhand.is(Items.TOTEM_OF_UNDYING) || offhand.isEmpty()) {
-                if (putShieldBack(client.player)) {
-                    shieldWasSwapped = false;
-                    tickDelay = SWAP_DELAY_TICKS;
-                }
+
             } else {
-                // Something else is in the offhand; don't overwrite the player's choice.
+
+                /*
+                 * If Shield Required is disabled, the mod can
+                 * place a Totem into an empty/non-totem offhand.
+                 */
+                if (!offhand.is(Items.TOTEM_OF_UNDYING)
+                        && !shieldWasSwapped) {
+
+                    if (putFirstTotemInOffhand(player)) {
+
+                        shieldWasSwapped = true;
+                        tickDelay = AutoTotemShieldConfig.swapDelay;
+                    }
+                }
+            }
+
+            /*
+             * Restock the Totem if it gets consumed.
+             */
+            if (shieldWasSwapped
+                    && AutoTotemShieldConfig.restockTotem) {
+
+                offhand =
+                        player.getItemBySlot(EquipmentSlot.OFFHAND);
+
+                if (!offhand.is(Items.TOTEM_OF_UNDYING)) {
+
+                    if (putFirstTotemInOffhand(player)) {
+                        tickDelay = AutoTotemShieldConfig.swapDelay;
+                    }
+                }
+            }
+
+        }
+
+        /*
+         * SAFE AGAIN
+         */
+        else if (shieldWasSwapped) {
+
+            offhand =
+                    player.getItemBySlot(EquipmentSlot.OFFHAND);
+
+            if (AutoTotemShieldConfig.returnToShield) {
+
+                if (offhand.is(Items.TOTEM_OF_UNDYING)
+                        || offhand.isEmpty()) {
+
+                    if (putShieldBack(player)) {
+
+                        shieldWasSwapped = false;
+                        tickDelay = AutoTotemShieldConfig.swapDelay;
+                    }
+
+                } else {
+
+                    /*
+                     * Something else is in the offhand.
+                     * Don't overwrite it.
+                     */
+                    shieldWasSwapped = false;
+                }
+
+            } else {
+
+                /*
+                 * Return-to-shield disabled.
+                 */
                 shieldWasSwapped = false;
             }
         }
     }
 
-    private ItemStack savedShield = ItemStack.EMPTY;
+    private boolean swapOffhandWithFirstTotem(Player player) {
 
-    private boolean swapOffhandWithFirstTotem(net.minecraft.world.entity.player.Player player) {
         Inventory inv = player.getInventory();
+
         for (int i = 0; i < inv.getContainerSize(); i++) {
+
             ItemStack stack = inv.getItem(i);
+
             if (stack.is(Items.TOTEM_OF_UNDYING)) {
-                ItemStack shield = player.getItemBySlot(EquipmentSlot.OFFHAND).copy();
+
+                ItemStack shield =
+                        player.getItemBySlot(
+                                EquipmentSlot.OFFHAND
+                        ).copy();
+
                 ItemStack totem = stack.copy();
                 totem.setCount(1);
 
-                // Remember the exact shield (including durability) while it is in the offhand.
                 savedShield = shield;
+
                 stack.shrink(1);
-                player.setItemSlot(EquipmentSlot.OFFHAND, totem);
+
+                player.setItemSlot(
+                        EquipmentSlot.OFFHAND,
+                        totem
+                );
 
                 return true;
             }
         }
+
         return false;
     }
 
-    private boolean putFirstTotemInOffhand(net.minecraft.world.entity.player.Player player) {
+    private boolean putFirstTotemInOffhand(Player player) {
+
         Inventory inv = player.getInventory();
+
+        int totalTotems = 0;
+
         for (int i = 0; i < inv.getContainerSize(); i++) {
+
             ItemStack stack = inv.getItem(i);
+
             if (stack.is(Items.TOTEM_OF_UNDYING)) {
+                totalTotems += stack.getCount();
+            }
+        }
+
+        /*
+         * Minimum Totems setting.
+         *
+         * Example:
+         * Minimum Totems = 2
+         *
+         * The mod will leave at least 2 Totems in the
+         * inventory before taking another one.
+         */
+        if (totalTotems <= AutoTotemShieldConfig.minimumTotems) {
+            return false;
+        }
+
+        for (int i = 0; i < inv.getContainerSize(); i++) {
+
+            ItemStack stack = inv.getItem(i);
+
+            if (stack.is(Items.TOTEM_OF_UNDYING)) {
+
                 ItemStack totem = stack.copy();
                 totem.setCount(1);
+
                 stack.shrink(1);
-                player.setItemSlot(EquipmentSlot.OFFHAND, totem);
+
+                player.setItemSlot(
+                        EquipmentSlot.OFFHAND,
+                        totem
+                );
+
                 return true;
             }
         }
+
         return false;
     }
 
-    private boolean putShieldBack(net.minecraft.world.entity.player.Player player) {
-        if (savedShield.isEmpty()) return false;
+    private boolean putShieldBack(Player player) {
+
+        if (savedShield.isEmpty()) {
+            return false;
+        }
 
         Inventory inv = player.getInventory();
-        ItemStack currentOffhand = player.getItemBySlot(EquipmentSlot.OFFHAND);
 
-        // Put the current Totem away first.
+        ItemStack currentOffhand =
+                player.getItemBySlot(
+                        EquipmentSlot.OFFHAND
+                );
+
+        /*
+         * Find an empty inventory slot for the Totem.
+         */
         for (int i = 0; i < inv.getContainerSize(); i++) {
+
             if (inv.getItem(i).isEmpty()) {
+
                 inv.setItem(i, currentOffhand);
-                player.setItemSlot(EquipmentSlot.OFFHAND, savedShield);
+
+                player.setItemSlot(
+                        EquipmentSlot.OFFHAND,
+                        savedShield
+                );
+
                 savedShield = ItemStack.EMPTY;
+
                 return true;
             }
         }
 
-        // If inventory is full, swap with the selected hotbar slot.
+        /*
+         * Inventory completely full.
+         *
+         * Swap the Totem with the selected hotbar slot.
+         */
         int selected = inv.getSelectedSlot();
+
         ItemStack main = inv.getItem(selected);
+
         inv.setItem(selected, currentOffhand);
-        player.setItemSlot(EquipmentSlot.OFFHAND, savedShield);
+
+        player.setItemSlot(
+                EquipmentSlot.OFFHAND,
+                savedShield
+        );
+
         savedShield = ItemStack.EMPTY;
+
         return true;
     }
 }
