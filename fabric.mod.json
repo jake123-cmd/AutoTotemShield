@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "autototemshield",
+  "version": "${version}",
+  "name": "Auto Totem Shield",
+  "description": "Keeps a shield in the offhand and swaps to a Totem at 3 hearts, then restores the shield.",
+  "authors": ["Robert"],
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "client": ["com.robert.autototemshield.AutoTotemShieldClient"]
+  },
+  "depends": {
+    "fabricloader": ">=0.19.3",
+    "minecraft": "~26.1.2",
+    "java": ">=25",
+    "fabric-api": "*"
+  }
+}
