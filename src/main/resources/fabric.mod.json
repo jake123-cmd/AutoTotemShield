@@ -3,17 +3,23 @@
   "id": "autototemshield",
   "version": "${version}",
   "name": "Auto Totem Shield",
-  "description": "Keeps a shield in the offhand and swaps to a Totem at 3 hearts, then restores the shield.",
+  "description": "Automatically swaps between a shield and Totem based on configurable health settings.",
   "authors": ["Robert"],
   "license": "MIT",
   "environment": "client",
   "entrypoints": {
-    "client": ["com.robert.autototemshield.AutoTotemShieldClient"]
+    "client": [
+      "com.robert.autototemshield.AutoTotemShieldClient"
+    ],
+    "modmenu": [
+      "com.robert.autototemshield.AutoTotemShieldModMenu"
+    ]
   },
   "depends": {
     "fabricloader": ">=0.19.3",
     "minecraft": "~26.1.2",
     "java": ">=25",
-    "fabric-api": "*"
+    "fabric-api": "*",
+    "modmenu": ">=18.0.0-beta.1"
   }
 }
