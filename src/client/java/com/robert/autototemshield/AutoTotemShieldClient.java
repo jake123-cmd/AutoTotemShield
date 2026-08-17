@@ -25,37 +25,21 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
     /*
      * ============================================================
-     * DANGEROUS FALL SETTINGS
+     * DANGEROUS FALL
      * ============================================================
      *
-     * The old system could trigger from relatively small drops.
+     * Small drops MUST NOT trigger the Totem.
      *
-     * This version is intentionally conservative.
-     *
-     * A fall must:
-     *
-     * 1. Be large enough to actually be dangerous.
-     * 2. Still be descending.
-     *
-     * Normal stairs, slabs and little ledges should NOT trigger.
+     * We require an actual dangerous fall.
      */
 
-    /*
-     * Minimum fall distance.
-     *
-     * 6 blocks means we are looking for a genuinely dangerous
-     * Minecraft fall rather than ordinary movement.
-     */
     private static final float DANGEROUS_FALL_DISTANCE = 6.0F;
 
-    /*
-     * The player must still be falling at a meaningful speed.
-     */
     private static final double DANGEROUS_FALL_SPEED = -0.55D;
 
     /*
-     * Extremely fast falling can activate slightly earlier,
-     * but still requires a real fall distance.
+     * Very fast falls can trigger earlier, but still require
+     * a substantial fall.
      */
     private static final float FAST_FALL_MIN_DISTANCE = 4.5F;
 
@@ -67,18 +51,11 @@ public class AutoTotemShieldClient implements ClientModInitializer {
      * FALL SAFETY LOCK
      * ============================================================
      *
-     * Once a dangerous fall has activated the Totem, we don't
-     * immediately allow the shield to come back just because
-     * the player touched the ground.
+     * Prevents:
      *
-     * This prevents:
+     * Totem -> Shield -> Totem
      *
-     *     Totem -> Shield
-     *
-     * immediately after landing.
-     *
-     * The Totem stays active until the normal return conditions
-     * are satisfied.
+     * around dangerous falls.
      */
 
     private static final int FALL_SAFETY_TICKS = 10;
@@ -91,54 +68,53 @@ public class AutoTotemShieldClient implements ClientModInitializer {
      * COMBAT PROTECTION
      * ============================================================
      *
-     * This is separate from the normal 3-heart trigger.
+     * Repeated damage can trigger the Totem above the normal
+     * 3-heart threshold.
      *
      * Example:
      *
-     * Player has 10 hearts.
-     * 20 mobs are attacking.
-     * Player keeps losing health.
-     *
-     * The mod can recognize repeated damage and equip the Totem
-     * before the player reaches 3 hearts.
+     * 10 hearts + repeatedly being attacked
+     * = Totem protection.
      */
 
-    /*
-     * Maximum health where combat protection can activate.
-     *
-     * 10 hearts = 20 health.
-     */
     private static final float COMBAT_TRIGGER_HEARTS = 10.0F;
 
-    /*
-     * Number of damaging health drops required within the window.
-     */
     private static final int COMBAT_REQUIRED_HITS = 3;
 
-    /*
-     * 40 ticks = approximately 2 seconds.
-     */
     private static final int COMBAT_DAMAGE_WINDOW_TICKS = 40;
 
-    /*
-     * Ignore extremely tiny health changes.
-     */
     private static final float MIN_DAMAGE_TO_COUNT = 0.5F;
 
-    /*
-     * Number of ticks remaining in the damage window.
-     */
     private int combatDamageWindow = 0;
 
-    /*
-     * Number of meaningful health drops detected recently.
-     */
     private int recentDamageHits = 0;
 
-    /*
-     * Last health value seen by the mod.
-     */
     private float lastHealth = -1.0F;
+
+
+    /*
+     * ============================================================
+     * ENVIRONMENT DANGER
+     * ============================================================
+     *
+     * Lava is treated as a high-priority danger.
+     *
+     * If the Totem is already equipped because of lava,
+     * healing above the normal return threshold does NOT
+     * immediately restore the shield.
+     *
+     * The player must first leave the dangerous environment.
+     */
+
+    private boolean lavaEmergencyActive = false;
+
+    /*
+     * Additional fire protection.
+     *
+     * Being on fire is dangerous, but we are more conservative
+     * than lava detection.
+     */
+    private boolean fireEmergencyActive = false;
 
 
     /*
@@ -161,9 +137,8 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
     private int operationCooldown = 0;
 
-
     /*
-     * The original shield that was in the offhand.
+     * Original shield.
      */
     private ItemStack savedShield = ItemStack.EMPTY;
 
@@ -225,7 +200,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
         /*
-         * Don't interact with inventories while another screen
+         * Never manipulate inventory while another screen
          * is open.
          */
         if (client.screen != null) {
@@ -242,7 +217,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
         /*
-         * Fall safety countdown.
+         * Fall safety timer.
          */
         if (fallSafetyTicks > 0) {
             fallSafetyTicks--;
@@ -257,44 +232,33 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
         /*
-         * Initialise health tracking.
+         * ========================================================
+         * COMBAT DAMAGE TRACKING
+         * ========================================================
          */
+
         if (lastHealth < 0.0F) {
 
             lastHealth = health;
         }
 
 
-        /*
-         * ========================================================
-         * COMBAT DAMAGE TRACKING
-         * ========================================================
-         *
-         * We compare the current health against the previous
-         * tick.
-         *
-         * If health dropped by a meaningful amount, count it as
-         * incoming damage.
-         */
-
         float healthDifference =
                 lastHealth - health;
 
 
+        /*
+         * Meaningful health loss.
+         */
         if (healthDifference >= MIN_DAMAGE_TO_COUNT) {
 
-            /*
-             * Start/restart the damage window.
-             */
             combatDamageWindow =
                     COMBAT_DAMAGE_WINDOW_TICKS;
 
             recentDamageHits++;
 
-            /*
-             * Prevent the counter from becoming unnecessarily huge.
-             */
             if (recentDamageHits > 10) {
+
                 recentDamageHits = 10;
             }
         }
@@ -312,18 +276,13 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
         } else {
 
-            /*
-             * No recent damage.
-             *
-             * Reset the hit counter.
-             */
             recentDamageHits = 0;
         }
 
 
         /*
          * ========================================================
-         * CONFIGURED HEALTH
+         * CONFIGURATION
          * ========================================================
          */
 
@@ -349,15 +308,68 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
         /*
          * ========================================================
+         * ENVIRONMENT DETECTION
+         * ========================================================
+         */
+
+        boolean inLava =
+                player.isInLava();
+
+
+        boolean onFire =
+                player.isOnFire();
+
+
+        /*
+         * ========================================================
+         * LAVA STATE
+         * ========================================================
+         *
+         * Once lava danger has activated while using the Totem,
+         * we keep the danger state until the player is actually
+         * out of lava.
+         */
+
+        if (inLava) {
+
+            lavaEmergencyActive = true;
+        }
+
+
+        /*
+         * Fire state.
+         *
+         * We only use fire protection after the player has
+         * actually been set on fire.
+         */
+        if (onFire) {
+
+            fireEmergencyActive = true;
+        }
+
+
+        /*
+         * ========================================================
+         * CLEAR FIRE STATE
+         * ========================================================
+         *
+         * Fire danger is cleared once the player is no longer
+         * burning.
+         */
+        if (!onFire) {
+
+            fireEmergencyActive = false;
+        }
+
+
+        /*
+         * ========================================================
          * VERIFY TOTEM SWAP
          * ========================================================
          */
 
         if (waitingForTotemVerification) {
 
-            /*
-             * Success.
-             */
             if (offhand.is(Items.TOTEM_OF_UNDYING)) {
 
                 waitingForTotemVerification = false;
@@ -366,11 +378,6 @@ public class AutoTotemShieldClient implements ClientModInitializer {
             }
 
 
-            /*
-             * Swap didn't appear to succeed.
-             *
-             * Retry.
-             */
             if (operationCooldown == 0) {
 
                 waitingForTotemVerification = false;
@@ -396,9 +403,6 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
         if (waitingForShieldVerification) {
 
-            /*
-             * Success.
-             */
             if (offhand.is(Items.SHIELD)) {
 
                 waitingForShieldVerification = false;
@@ -411,17 +415,16 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
                 combatEmergencyActive = false;
 
+                lavaEmergencyActive = false;
+
+                fireEmergencyActive = false;
+
                 savedShield = ItemStack.EMPTY;
 
                 return;
             }
 
 
-            /*
-             * Shield wasn't restored.
-             *
-             * Retry.
-             */
             if (operationCooldown == 0) {
 
                 waitingForShieldVerification = false;
@@ -441,7 +444,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
         /*
          * ========================================================
-         * NORMAL LOW-HEALTH DETECTION
+         * HEALTH DETECTION
          * ========================================================
          */
 
@@ -451,7 +454,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
         /*
          * ========================================================
-         * DANGEROUS FALL DETECTION
+         * FALL DETECTION
          * ========================================================
          */
 
@@ -460,9 +463,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
         /*
-         * IMPORTANT:
-         *
-         * fallDistance is a FLOAT in Minecraft 26.1.x.
+         * Minecraft 26.1.x uses FLOAT for fallDistance.
          */
         float fallDistance =
                 player.fallDistance;
@@ -473,12 +474,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
         /*
-         * Normal dangerous fall.
-         *
-         * Requires BOTH:
-         *
-         * - at least 6 blocks of fall distance
-         * - meaningful downward velocity
+         * Genuine dangerous fall.
          */
         boolean dangerousFall =
                 airborne
@@ -487,10 +483,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
         /*
-         * Very fast fall.
-         *
-         * This can trigger slightly earlier, but still requires
-         * at least 4.5 blocks of actual fall distance.
+         * Extremely fast dangerous fall.
          */
         boolean veryFastDangerousFall =
                 airborne
@@ -505,26 +498,36 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
         /*
          * ========================================================
-         * COMBAT DANGER DETECTION
+         * COMBAT DANGER
          * ========================================================
-         *
-         * Combat protection only activates while:
-         *
-         * - health is at or below 10 hearts
-         * - multiple meaningful damage events happened recently
-         *
-         * This means:
-         *
-         * 10 hearts + getting repeatedly hit = Totem
-         *
-         * while:
-         *
-         * 20 hearts + taking one tiny hit = Shield stays.
          */
+
         boolean combatDanger =
                 health <= COMBAT_TRIGGER_HEARTS * 2.0F
                         && combatDamageWindow > 0
                         && recentDamageHits >= COMBAT_REQUIRED_HITS;
+
+
+        /*
+         * ========================================================
+         * ENVIRONMENT DANGER
+         * ========================================================
+         *
+         * Lava is intentionally considered dangerous even when
+         * health is currently high.
+         *
+         * Example:
+         *
+         * Player enters lava.
+         * Totem equips.
+         * Player eats/heals to 10 hearts.
+         * Totem STAYS.
+         */
+
+        boolean environmentDanger =
+                inLava
+                        || lavaEmergencyActive
+                        || fireEmergencyActive;
 
 
         /*
@@ -536,7 +539,8 @@ public class AutoTotemShieldClient implements ClientModInitializer {
         boolean emergency =
                 lowHealth
                         || dangerousFall
-                        || combatDanger;
+                        || combatDanger
+                        || environmentDanger;
 
 
         /*
@@ -548,21 +552,20 @@ public class AutoTotemShieldClient implements ClientModInitializer {
         if (emergency) {
 
             /*
-             * Remember what caused the emergency.
+             * Dangerous fall state.
              */
             if (dangerousFall) {
 
                 fallEmergencyActive = true;
 
-                /*
-                 * Give the Totem a small safety lock after
-                 * landing.
-                 */
                 fallSafetyTicks =
                         FALL_SAFETY_TICKS;
             }
 
 
+            /*
+             * Combat state.
+             */
             if (combatDanger) {
 
                 combatEmergencyActive = true;
@@ -570,7 +573,25 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
             /*
-             * Never begin restoring the shield during danger.
+             * Environment state.
+             */
+            if (inLava) {
+
+                lavaEmergencyActive = true;
+            }
+
+
+            /*
+             * Fire state.
+             */
+            if (onFire) {
+
+                fireEmergencyActive = true;
+            }
+
+
+            /*
+             * Never start returning the shield during danger.
              */
             returningShield = false;
 
@@ -584,11 +605,11 @@ public class AutoTotemShieldClient implements ClientModInitializer {
             if (AutoTotemShieldConfig.shieldRequired) {
 
                 /*
-                 * Already have a Totem.
+                 * Already have Totem.
                  *
-                 * DO ABSOLUTELY NOTHING.
+                 * DO NOTHING.
                  *
-                 * This prevents phasing.
+                 * This is critical for preventing flickering.
                  */
                 if (offhand.is(Items.TOTEM_OF_UNDYING)) {
 
@@ -599,7 +620,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
                 /*
-                 * Save the shield only once.
+                 * Save shield once.
                  */
                 if (!emergencyActive
                         && offhand.is(Items.SHIELD)) {
@@ -612,7 +633,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
                 /*
-                 * Equip Totem.
+                 * Put Totem into offhand.
                  */
                 if (emergencyActive
                         && !offhand.is(Items.TOTEM_OF_UNDYING)
@@ -661,34 +682,125 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
         /*
          * ========================================================
-         * FALL EMERGENCY LOCK
+         * LAVA SAFETY LOCK
          * ========================================================
          *
-         * This is the major improvement.
+         * This has higher priority than Return Health.
          *
-         * Once a dangerous fall activated the Totem:
+         * If the player is still in lava:
          *
-         *     DO NOT immediately restore shield.
-         *
-         * We require:
-         *
-         * - the player has landed
-         * - the safety timer has expired
-         * - the normal return conditions are satisfied
-         *
-         * This prevents the 6-block:
-         *
-         * Totem -> Shield -> Totem
-         *
-         * problem.
+         * NEVER restore shield.
+         */
+
+        if (lavaEmergencyActive) {
+
+            /*
+             * Still in lava.
+             */
+            if (inLava) {
+
+                /*
+                 * Keep Totem.
+                 */
+                if (offhand.is(
+                        Items.TOTEM_OF_UNDYING)) {
+
+                    return;
+                }
+
+
+                /*
+                 * Totem disappeared while still in lava.
+                 *
+                 * Attempt replacement.
+                 */
+                if (operationCooldown == 0) {
+
+                    if (putTotemInOffhand(
+                            client,
+                            player)) {
+
+                        emergencyActive = true;
+
+                        operationCooldown =
+                                VERIFY_DELAY_TICKS;
+                    }
+                }
+
+                return;
+            }
+
+
+            /*
+             * No longer in lava.
+             *
+             * DO NOT immediately clear the emergency.
+             *
+             * The normal return-health logic below decides
+             * when the shield can safely return.
+             */
+            lavaEmergencyActive = false;
+        }
+
+
+        /*
+         * ========================================================
+         * FIRE SAFETY
+         * ========================================================
+         */
+
+        if (fireEmergencyActive) {
+
+            /*
+             * Still burning.
+             *
+             * Keep Totem.
+             */
+            if (onFire) {
+
+                if (offhand.is(
+                        Items.TOTEM_OF_UNDYING)) {
+
+                    return;
+                }
+
+
+                if (operationCooldown == 0) {
+
+                    if (putTotemInOffhand(
+                            client,
+                            player)) {
+
+                        emergencyActive = true;
+
+                        operationCooldown =
+                                VERIFY_DELAY_TICKS;
+                    }
+                }
+
+                return;
+            }
+
+
+            /*
+             * No longer burning.
+             *
+             * Allow normal return logic.
+             */
+            fireEmergencyActive = false;
+        }
+
+
+        /*
+         * ========================================================
+         * FALL SAFETY LOCK
+         * ========================================================
          */
 
         if (fallEmergencyActive) {
 
             /*
              * Still airborne.
-             *
-             * Keep Totem.
              */
             if (!player.onGround()) {
 
@@ -699,11 +811,6 @@ public class AutoTotemShieldClient implements ClientModInitializer {
                 }
 
 
-                /*
-                 * Totem disappeared while falling.
-                 *
-                 * Try to replace it.
-                 */
                 if (operationCooldown == 0) {
 
                     if (putTotemInOffhand(
@@ -720,32 +827,31 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
             /*
-             * Player has landed.
-             *
-             * Don't immediately clear the fall emergency.
-             *
-             * Keep the safety lock active.
+             * Landed but safety timer still active.
              */
             if (fallSafetyTicks > 0) {
 
                 return;
             }
+
+
+            /*
+             * Fall is now completely finished.
+             */
+            fallEmergencyActive = false;
         }
 
 
         /*
          * ========================================================
-         * COMBAT EMERGENCY LOCK
+         * COMBAT SAFETY LOCK
          * ========================================================
-         *
-         * If we're still taking damage, don't immediately return
-         * the shield.
          */
 
         if (combatEmergencyActive) {
 
             /*
-             * If damage is still happening, keep Totem.
+             * Still taking repeated damage.
              */
             if (combatDamageWindow > 0
                     && recentDamageHits >= COMBAT_REQUIRED_HITS) {
@@ -755,10 +861,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
             /*
-             * Combat danger has calmed down.
-             *
-             * Normal Return Health logic below can now decide
-             * when to restore the shield.
+             * Combat has calmed down.
              */
             combatEmergencyActive = false;
         }
@@ -775,7 +878,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
             /*
-             * Return-to-shield disabled.
+             * User disabled shield restoration.
              */
             if (!AutoTotemShieldConfig.returnToShield) {
 
@@ -787,6 +890,10 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
                 combatEmergencyActive = false;
 
+                lavaEmergencyActive = false;
+
+                fireEmergencyActive = false;
+
                 savedShield = ItemStack.EMPTY;
 
                 return;
@@ -794,7 +901,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
             /*
-             * NEVER restore while airborne.
+             * Never restore while airborne.
              */
             if (!player.onGround()) {
 
@@ -803,9 +910,27 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
             /*
-             * Fall safety lock still active.
+             * Never restore while the fall safety lock exists.
              */
             if (fallSafetyTicks > 0) {
+
+                return;
+            }
+
+
+            /*
+             * Never restore while in lava.
+             */
+            if (player.isInLava()) {
+
+                return;
+            }
+
+
+            /*
+             * Never restore while burning.
+             */
+            if (player.isOnFire()) {
 
                 return;
             }
@@ -818,7 +943,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
             /*
-             * If Totem is still equipped, restore shield.
+             * Totem still equipped.
              */
             if (offhand.is(Items.TOTEM_OF_UNDYING)) {
 
@@ -842,8 +967,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
             /*
              * Totem was consumed.
              *
-             * If restocking is enabled, attempt another Totem
-             * first.
+             * Try to restock first.
              */
             if (offhand.isEmpty()) {
 
@@ -865,7 +989,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
                 /*
                  * No Totem available.
                  *
-                 * Restore the shield if possible.
+                 * Restore shield.
                  */
                 if (operationCooldown == 0) {
 
@@ -889,7 +1013,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
             /*
              * Player manually changed offhand.
              *
-             * Respect their action.
+             * Respect it.
              */
             emergencyActive = false;
 
@@ -898,6 +1022,10 @@ public class AutoTotemShieldClient implements ClientModInitializer {
             fallEmergencyActive = false;
 
             combatEmergencyActive = false;
+
+            lavaEmergencyActive = false;
+
+            fireEmergencyActive = false;
 
             savedShield = ItemStack.EMPTY;
 
@@ -918,9 +1046,6 @@ public class AutoTotemShieldClient implements ClientModInitializer {
                 player.getInventory();
 
 
-        /*
-         * Search the complete player inventory.
-         */
         for (int slot = 0;
              slot < inventory.getContainerSize();
              slot++) {
@@ -944,17 +1069,6 @@ public class AutoTotemShieldClient implements ClientModInitializer {
      * ============================================================
      * INVENTORY SLOT -> MENU SLOT
      * ============================================================
-     *
-     * Player inventory:
-     *
-     * 0-8   = hotbar
-     * 9-35  = main inventory
-     *
-     * Player inventory menu:
-     *
-     * 9-35  = main inventory
-     * 36-44 = hotbar
-     * 45    = offhand
      */
 
     private int inventorySlotToMenuSlot(
@@ -1018,7 +1132,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
         /*
-         * Find a Totem.
+         * Find Totem.
          */
         int inventorySlot =
                 findTotemSlot(player);
@@ -1045,7 +1159,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
         /*
          * REAL Minecraft inventory operation.
          *
-         * Button 40 = offhand.
+         * Button 40 = offhand swap.
          */
         client.gameMode.handleContainerInput(
                 player.inventoryMenu.containerId,
@@ -1057,7 +1171,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
         /*
-         * Verify on the following tick.
+         * Verify next tick.
          */
         waitingForTotemVerification = true;
 
@@ -1101,7 +1215,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
         /*
-         * Only swap if a Totem is actually in the offhand.
+         * Only swap if Totem is actually equipped.
          */
         if (!offhand.is(Items.TOTEM_OF_UNDYING)) {
 
@@ -1174,7 +1288,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
             Inventory inventory) {
 
         /*
-         * First find the exact original shield.
+         * Exact original shield first.
          */
         for (int slot = 0;
              slot < inventory.getContainerSize();
@@ -1239,6 +1353,10 @@ public class AutoTotemShieldClient implements ClientModInitializer {
         fallEmergencyActive = false;
 
         combatEmergencyActive = false;
+
+        lavaEmergencyActive = false;
+
+        fireEmergencyActive = false;
 
         operationCooldown = 0;
 
