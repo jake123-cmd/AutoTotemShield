@@ -28,7 +28,8 @@ dependencies {
     minecraft "com.mojang:minecraft:${project.minecraft_version}"
 
     implementation "net.fabricmc:fabric-loader:${project.loader_version}"
-    implementation "net.fabricmc:fabric-api:${project.fabric_api_version}"
+
+    implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
 
     implementation "com.terraformersmc:modmenu:${project.modmenu_version}"
 }
@@ -54,154 +55,20 @@ java {
     targetCompatibility = JavaVersion.VERSION_25
 }
 
+jar {
+    def projectName = project.name
 
-/*
- * ============================================================
- * TEMPORARY MINECRAFT 26.1.2 API INSPECTOR
- * ============================================================
- *
- * This does NOT change the mod.
- *
- * It only looks inside the exact Minecraft JAR downloaded by
- * your current Fabric Loom setup so we can identify the correct
- * 26.1.2 inventory/client interaction classes.
- *
- * We will remove this task after the inspection.
- */
+    inputs.property "projectName", projectName
 
-tasks.register("inspectMinecraftApi") {
+    from("LICENSE") {
+        rename { "${it}_${projectName}" }
+    }
+}
 
-    doLast {
-
-        println ""
-        println "=================================================="
-        println " AUTO TOTEM SHIELD - 26.1.2 API INSPECTOR"
-        println "=================================================="
-        println ""
-
-        /*
-         * Find the Minecraft dependency from Gradle's
-         * resolved dependency files.
-         */
-        def minecraftFiles = configurations
-                .findAll { configuration ->
-                    configuration.canBeResolved
-                }
-                .collectMany { configuration ->
-                    try {
-                        configuration.resolve()
-                    } catch (Exception ignored) {
-                        return []
-                    }
-                }
-                .findAll { file ->
-                    file.name.contains("minecraft")
-                            && file.name.endsWith(".jar")
-                }
-
-        if (minecraftFiles.isEmpty()) {
-
-            println "ERROR: Could not locate the Minecraft JAR."
-            println ""
-            println "The normal Gradle build is still untouched."
-            println ""
-
-            return
+publishing {
+    publications {
+        create("mavenJava", MavenPublication) {
+            from components.java
         }
-
-        def minecraftJar = minecraftFiles
-                .find { file ->
-                    file.name.contains(
-                            project.minecraft_version
-                    )
-                }
-
-        if (minecraftJar == null) {
-            minecraftJar = minecraftFiles[0]
-        }
-
-        println "Minecraft JAR:"
-        println minecraftJar.absolutePath
-        println ""
-
-        println "Minecraft version:"
-        println project.minecraft_version
-        println ""
-
-        println "Searching relevant classes..."
-        println ""
-
-        def zip = new java.util.zip.ZipFile(
-                minecraftJar
-        )
-
-        def matches = []
-
-        zip.entries().each { entry ->
-
-            if (!entry.name.endsWith(".class")) {
-                return
-            }
-
-            def className = entry.name
-                    .replace("/", ".")
-                    .replace(".class", "")
-
-            /*
-             * Inventory/client/slot related classes.
-             */
-            if (
-                    className.contains("Inventory")
-                            ||
-                    className.contains("inventory")
-                            ||
-                    className.contains("Slot")
-                            ||
-                    className.contains("slot")
-                            ||
-                    className.contains("Screen")
-                            ||
-                    className.contains("screen")
-                            ||
-                    className.contains("Menu")
-                            ||
-                    className.contains("menu")
-                            ||
-                    className.contains("Container")
-                            ||
-                    className.contains("container")
-                            ||
-                    className.contains("Interaction")
-                            ||
-                    className.contains("interaction")
-                            ||
-                    className.contains("Client")
-                            ||
-                    className.contains("client")
-            ) {
-
-                matches.add(className)
-            }
-        }
-
-        zip.close()
-
-        matches
-                .unique()
-                .sort()
-                .each { className ->
-
-                    println className
-                }
-
-        println ""
-        println "Total matching classes:"
-        println matches.unique().size()
-        println ""
-
-        println "=================================================="
-        println " END API INSPECTION"
-        println "=================================================="
-        println ""
     }
 }
