@@ -54,7 +54,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
      * 4 blocks is intentionally used so normal steps, stairs,
      * slabs and tiny ledges don't trigger the system.
      */
-    private static final float DANGEROUS_FALL_DISTANCE = 4.0F;
+    private static final double DANGEROUS_FALL_DISTANCE = 4.0D;
 
     /*
      * Player must still be moving downward.
@@ -341,7 +341,12 @@ public class AutoTotemShieldClient implements ClientModInitializer {
                 !player.onGround();
 
 
-        float fallDistance =
+        /*
+         * FIX:
+         *
+         * Minecraft 26.1.2 exposes fallDistance as a double.
+         */
+        double fallDistance =
                 player.fallDistance;
 
 
@@ -365,7 +370,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
          */
         boolean veryFastDangerousFall =
                 airborne
-                        && fallDistance >= 2.0F
+                        && fallDistance >= 2.0D
                         && verticalVelocity <= VERY_FAST_FALL_SPEED;
 
 
