@@ -3,7 +3,6 @@ package com.robert.autototemshield;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.multiplayer.MultiPlayerGameMode;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.entity.player.Player;
@@ -19,28 +18,17 @@ public class AutoTotemShieldClient implements ClientModInitializer {
      * ============================================================
      */
 
-    /*
-     * Wait one tick after an inventory operation before deciding
-     * that it failed.
-     */
     private static final int VERIFY_DELAY_TICKS = 1;
 
-    /*
-     * Don't spam inventory packets.
-     */
     private static final int RETRY_COOLDOWN_TICKS = 2;
 
     /*
-     * Start preparing the Totem while falling quickly.
+     * Start preparing the Totem while falling.
      */
     private static final double FALL_SPEED_TRIGGER = -0.35D;
 
     /*
-     * Extremely fast fall protection.
-     *
-     * This is deliberately lower than the normal trigger because
-     * the player may still have full health immediately before
-     * receiving a huge amount of fall damage.
+     * Faster fall = even more urgent.
      */
     private static final double FAST_FALL_TRIGGER = -0.70D;
 
@@ -62,12 +50,16 @@ public class AutoTotemShieldClient implements ClientModInitializer {
     private int operationCooldown = 0;
 
     /*
-     * Remember the shield that was originally in the offhand.
-     *
-     * This preserves durability and components.
+     * The shield that was originally in the offhand.
      */
     private ItemStack savedShield = ItemStack.EMPTY;
 
+
+    /*
+     * ============================================================
+     * INITIALIZE
+     * ============================================================
+     */
 
     @Override
     public void onInitializeClient() {
@@ -86,47 +78,66 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
     private void tick(Minecraft client) {
 
+        /*
+         * No player/world.
+         */
         if (client.player == null || client.level == null) {
+
             resetState();
+
             return;
         }
 
+
+        /*
+         * Mod disabled.
+         */
         if (!AutoTotemShieldConfig.enabled) {
             return;
         }
+
 
         Player player = client.player;
 
 
         /*
-         * Never manipulate inventory while dead.
+         * Never manipulate inventory after death.
          */
         if (!player.isAlive()) {
+
             resetState();
+
             return;
         }
 
 
         /*
-         * Don't operate while a screen/container is open.
+         * Don't perform inventory clicks while a chest,
+         * crafting table, furnace, etc. is open.
          *
-         * This prevents the mod from accidentally clicking a
-         * chest, crafting table, furnace, etc.
+         * This prevents the mod from accidentally clicking
+         * another container.
          */
         if (client.screen != null) {
             return;
         }
 
 
+        /*
+         * Cooldown between inventory operations.
+         */
         if (operationCooldown > 0) {
             operationCooldown--;
         }
 
 
-        float health = player.getHealth();
+        float health =
+                player.getHealth();
+
 
         double triggerHealth =
                 AutoTotemShieldConfig.triggerHearts * 2.0D;
+
 
         double returnHealth =
                 AutoTotemShieldConfig.returnHearts * 2.0D;
@@ -140,8 +151,12 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
         /*
          * ========================================================
-         * VERIFY A PENDING TOTEM SWAP
+         * VERIFY TOTEM SWAP
          * ========================================================
+         *
+         * We NEVER assume the swap succeeded.
+         *
+         * We check the actual offhand slot.
          */
 
         if (waitingForTotemVerification) {
@@ -150,38 +165,36 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
                 /*
                  * SUCCESS.
-                 *
-                 * Minecraft now sees the Totem in the actual
-                 * offhand slot through the inventory system.
                  */
                 waitingForTotemVerification = false;
 
-            } else if (operationCooldown == 0) {
-
-                /*
-                 * The previous click didn't result in a Totem.
-                 *
-                 * Try again.
-                 */
-                waitingForTotemVerification = false;
-
-                putTotemInOffhand(client, player);
-
-                operationCooldown =
-                        RETRY_COOLDOWN_TICKS;
+                return;
             }
 
+
             /*
-             * Never continue into shield restoration while we
-             * haven't confirmed the Totem.
+             * Swap did not appear in the offhand.
+             *
+             * Retry after cooldown.
              */
+            if (operationCooldown == 0) {
+
+                waitingForTotemVerification = false;
+
+                if (putTotemInOffhand(client, player)) {
+
+                    operationCooldown =
+                            RETRY_COOLDOWN_TICKS;
+                }
+            }
+
             return;
         }
 
 
         /*
          * ========================================================
-         * VERIFY A PENDING SHIELD RESTORATION
+         * VERIFY SHIELD RESTORATION
          * ========================================================
          */
 
@@ -190,24 +203,32 @@ public class AutoTotemShieldClient implements ClientModInitializer {
             if (offhand.is(Items.SHIELD)) {
 
                 /*
-                 * Shield successfully restored.
+                 * SUCCESS.
                  */
                 waitingForShieldVerification = false;
+
                 returningShield = false;
+
                 emergencyActive = false;
+
                 savedShield = ItemStack.EMPTY;
 
-            } else if (operationCooldown == 0) {
+                return;
+            }
 
-                /*
-                 * Shield wasn't restored yet.
-                 */
+
+            /*
+             * Shield wasn't restored.
+             */
+            if (operationCooldown == 0) {
+
                 waitingForShieldVerification = false;
 
-                restoreShield(client, player);
+                if (restoreShield(client, player)) {
 
-                operationCooldown =
-                        RETRY_COOLDOWN_TICKS;
+                    operationCooldown =
+                            RETRY_COOLDOWN_TICKS;
+                }
             }
 
             return;
@@ -216,7 +237,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
         /*
          * ========================================================
-         * EMERGENCY DETECTION
+         * HEALTH / FALL DETECTION
          * ========================================================
          */
 
@@ -236,6 +257,15 @@ public class AutoTotemShieldClient implements ClientModInitializer {
                         < FAST_FALL_TRIGGER;
 
 
+        /*
+         * Emergency can therefore be triggered by:
+         *
+         * - low health
+         * - falling
+         * - very fast falling
+         *
+         * This doesn't care what caused previous damage.
+         */
         boolean emergency =
                 lowHealth
                         || falling
@@ -244,7 +274,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
         /*
          * ========================================================
-         * EMERGENCY ACTIVE
+         * EMERGENCY
          * ========================================================
          */
 
@@ -254,22 +284,20 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
             /*
-             * ----------------------------------------------------
-             * SHIELD REQUIRED MODE
-             * ----------------------------------------------------
+             * ====================================================
+             * SHIELD REQUIRED
+             * ====================================================
              */
 
             if (AutoTotemShieldConfig.shieldRequired) {
 
                 /*
-                 * Already have the Totem.
+                 * Already have a Totem.
                  *
-                 * DO NOTHING.
+                 * DO NOT TOUCH IT.
                  *
-                 * This is extremely important.
-                 *
-                 * We must not keep clicking the inventory every
-                 * tick while a Totem is already equipped.
+                 * This prevents the shield/Totem from repeatedly
+                 * phasing over each other.
                  */
                 if (offhand.is(Items.TOTEM_OF_UNDYING)) {
 
@@ -280,9 +308,9 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
                 /*
-                 * First emergency tick.
+                 * First emergency detection.
                  *
-                 * Save the actual shield before swapping it.
+                 * Save the actual shield.
                  */
                 if (!emergencyActive
                         && offhand.is(Items.SHIELD)) {
@@ -295,22 +323,17 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
                 /*
-                 * If emergency mode is active and there is no
-                 * Totem in the offhand, try to equip one.
+                 * Emergency is active but the Totem isn't equipped.
+                 *
+                 * Use a real Minecraft inventory swap.
                  */
                 if (emergencyActive
                         && !offhand.is(Items.TOTEM_OF_UNDYING)
                         && operationCooldown == 0) {
 
-                    /*
-                     * IMPORTANT:
-                     *
-                     * We do NOT use setItemSlot().
-                     *
-                     * We perform a normal Minecraft inventory
-                     * SWAP operation instead.
-                     */
-                    if (putTotemInOffhand(client, player)) {
+                    if (putTotemInOffhand(
+                            client,
+                            player)) {
 
                         operationCooldown =
                                 VERIFY_DELAY_TICKS;
@@ -322,19 +345,22 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
             /*
-             * ----------------------------------------------------
-             * SHIELD REQUIRED DISABLED
-             * ----------------------------------------------------
+             * ====================================================
+             * SHIELD REQUIRED OFF
+             * ====================================================
              */
 
             else {
 
                 emergencyActive = true;
 
+
                 if (!offhand.is(Items.TOTEM_OF_UNDYING)
                         && operationCooldown == 0) {
 
-                    if (putTotemInOffhand(client, player)) {
+                    if (putTotemInOffhand(
+                            client,
+                            player)) {
 
                         operationCooldown =
                                 VERIFY_DELAY_TICKS;
@@ -348,12 +374,10 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
         /*
          * ========================================================
-         * SAFE AGAIN
+         * RETURN TO SHIELD
          * ========================================================
          *
-         * We don't immediately restore the shield.
-         *
-         * We wait until Return Health.
+         * We only restore after Return Health.
          */
 
         if (emergencyActive
@@ -361,12 +385,14 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
             /*
-             * Return-to-shield disabled.
+             * User disabled shield restoration.
              */
             if (!AutoTotemShieldConfig.returnToShield) {
 
                 emergencyActive = false;
+
                 returningShield = false;
+
                 savedShield = ItemStack.EMPTY;
 
                 return;
@@ -380,11 +406,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
             /*
-             * Only restore the shield if the offhand still
-             * contains the Totem we expect.
-             *
-             * If the player manually changed their offhand,
-             * respect their decision.
+             * Only swap if the Totem is actually there.
              */
             if (offhand.is(Items.TOTEM_OF_UNDYING)) {
 
@@ -392,7 +414,9 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
                     returningShield = true;
 
-                    if (restoreShield(client, player)) {
+                    if (restoreShield(
+                            client,
+                            player)) {
 
                         operationCooldown =
                                 VERIFY_DELAY_TICKS;
@@ -404,15 +428,17 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
             /*
-             * Empty offhand can happen if the Totem was consumed.
+             * If the Totem was consumed and the offhand is now
+             * empty, don't blindly overwrite it.
              *
-             * In that case, don't blindly overwrite whatever the
-             * player may have manually equipped.
+             * The player may have manually changed something.
              */
             if (offhand.isEmpty()) {
 
                 emergencyActive = false;
+
                 returningShield = false;
+
                 savedShield = ItemStack.EMPTY;
 
                 return;
@@ -420,13 +446,17 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
             /*
-             * Something else is in the offhand.
+             * Player put something else in the offhand.
              *
-             * Player probably changed it manually.
+             * Respect the player's action.
              */
             emergencyActive = false;
+
             returningShield = false;
+
             savedShield = ItemStack.EMPTY;
+
+            return;
         }
     }
 
@@ -443,17 +473,29 @@ public class AutoTotemShieldClient implements ClientModInitializer {
                 player.getInventory();
 
 
-        for (int inventorySlot = 0;
-             inventorySlot < inventory.getContainerSize();
-             inventorySlot++) {
+        /*
+         * Search the entire player inventory.
+         *
+         * 1 Totem = usable.
+         * 3 Totems = usable.
+         * 20 Totems = usable.
+         *
+         * minimumTotems is NOT used as an emergency blocker.
+         */
+        for (int slot = 0;
+             slot < inventory.getContainerSize();
+             slot++) {
 
             ItemStack stack =
-                    inventory.getItem(inventorySlot);
+                    inventory.getItem(slot);
+
 
             if (stack.is(Items.TOTEM_OF_UNDYING)) {
-                return inventorySlot;
+
+                return slot;
             }
         }
+
 
         return -1;
     }
@@ -461,37 +503,43 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
     /*
      * ============================================================
-     * INVENTORY SLOT -> SCREEN SLOT
+     * INVENTORY SLOT -> PLAYER MENU SLOT
      * ============================================================
      *
-     * Minecraft's player inventory menu does not use exactly the
-     * same slot numbers as Inventory.
-     *
-     * Inventory:
+     * Player inventory:
      *
      * 0-8   = hotbar
      * 9-35  = main inventory
      *
-     * InventoryMenu:
+     * Player inventory menu:
      *
      * 9-35  = main inventory
      * 36-44 = hotbar
      * 45    = offhand
      */
 
-    private int inventorySlotToMenuSlot(int inventorySlot) {
+    private int inventorySlotToMenuSlot(
+            int inventorySlot) {
 
+        /*
+         * Hotbar.
+         */
         if (inventorySlot >= 0
                 && inventorySlot <= 8) {
 
             return 36 + inventorySlot;
         }
 
+
+        /*
+         * Main inventory.
+         */
         if (inventorySlot >= 9
                 && inventorySlot <= 35) {
 
             return inventorySlot;
         }
+
 
         return -1;
     }
@@ -499,7 +547,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
     /*
      * ============================================================
-     * NORMAL SYNCHRONIZED TOTEM SWAP
+     * PUT TOTEM INTO OFFHAND
      * ============================================================
      */
 
@@ -507,7 +555,11 @@ public class AutoTotemShieldClient implements ClientModInitializer {
             Minecraft client,
             Player player) {
 
+        /*
+         * No game mode = don't touch inventory.
+         */
         if (client.gameMode == null) {
+
             return false;
         }
 
@@ -529,14 +581,18 @@ public class AutoTotemShieldClient implements ClientModInitializer {
         }
 
 
+        /*
+         * Find an available Totem.
+         */
         int inventorySlot =
                 findTotemSlot(player);
 
 
-        /*
-         * No Totem available.
-         */
         if (inventorySlot == -1) {
+
+            /*
+             * No Totem available.
+             */
             return false;
         }
 
@@ -548,25 +604,26 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
         if (menuSlot == -1) {
+
             return false;
         }
 
 
         /*
          * ========================================================
-         * THIS IS THE IMPORTANT PART
+         * REAL MINECRAFT INVENTORY OPERATION
          * ========================================================
          *
-         * Button 40 = offhand.
+         * 40 = offhand swap button.
          *
-         * SWAP means:
+         * ContainerInput.SWAP tells Minecraft to perform the
+         * actual inventory swap instead of us directly changing
+         * the player's slot.
          *
-         * inventory slot <-> selected offhand slot
-         *
-         * This lets Minecraft perform the actual inventory
-         * transaction instead of us directly editing the slot.
+         * Minecraft 26.1.x exposes this through
+         * MultiPlayerGameMode.handleContainerInput().
          */
-        client.gameMode.handleInventoryMouseClick(
+        client.gameMode.handleContainerInput(
                 player.inventoryMenu.containerId,
                 menuSlot,
                 40,
@@ -576,7 +633,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
         /*
-         * We do NOT assume success.
+         * We DON'T claim it worked.
          *
          * The next tick verifies the actual offhand.
          */
@@ -597,12 +654,20 @@ public class AutoTotemShieldClient implements ClientModInitializer {
             Minecraft client,
             Player player) {
 
+        /*
+         * Nothing saved.
+         */
         if (savedShield.isEmpty()) {
+
             return false;
         }
 
 
+        /*
+         * No game mode.
+         */
         if (client.gameMode == null) {
+
             return false;
         }
 
@@ -614,8 +679,8 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
         /*
-         * If the player no longer has the Totem in the offhand,
-         * don't overwrite anything.
+         * We only move the shield back if the Totem is actually
+         * occupying the offhand.
          */
         if (!offhand.is(Items.TOTEM_OF_UNDYING)) {
 
@@ -628,44 +693,40 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
         /*
-         * Find the saved shield.
-         *
-         * We search for an actual shield matching the saved
-         * stack's components/durability as closely as possible.
+         * Find the saved shield in the inventory.
          */
-        int shieldInventorySlot =
+        int shieldSlot =
                 findSavedShieldSlot(
                         inventory
                 );
 
 
-        /*
-         * If we cannot find the shield, don't destroy the Totem.
-         */
-        if (shieldInventorySlot == -1) {
+        if (shieldSlot == -1) {
+
             return false;
         }
 
 
         int menuSlot =
                 inventorySlotToMenuSlot(
-                        shieldInventorySlot
+                        shieldSlot
                 );
 
 
         if (menuSlot == -1) {
+
             return false;
         }
 
 
         /*
-         * Swap the shield into the offhand using Minecraft's
-         * synchronized inventory operation.
+         * Swap:
          *
-         * The Totem automatically goes back into the shield's
-         * inventory slot.
+         * inventory shield <-> offhand Totem
+         *
+         * Minecraft handles the actual transaction.
          */
-        client.gameMode.handleInventoryMouseClick(
+        client.gameMode.handleContainerInput(
                 player.inventoryMenu.containerId,
                 menuSlot,
                 40,
@@ -675,7 +736,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
         /*
-         * Again, don't assume it worked.
+         * Verify next tick.
          */
         waitingForShieldVerification = true;
 
@@ -693,8 +754,9 @@ public class AutoTotemShieldClient implements ClientModInitializer {
     private int findSavedShieldSlot(
             Inventory inventory) {
 
+
         /*
-         * First try to find an exact matching stack.
+         * First look for the exact saved stack.
          */
         for (int slot = 0;
              slot < inventory.getContainerSize();
@@ -703,14 +765,15 @@ public class AutoTotemShieldClient implements ClientModInitializer {
             ItemStack stack =
                     inventory.getItem(slot);
 
+
             if (!stack.is(Items.SHIELD)) {
                 continue;
             }
 
+
             if (ItemStack.matches(
                     stack,
-                    savedShield
-            )) {
+                    savedShield)) {
 
                 return slot;
             }
@@ -718,11 +781,10 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
         /*
-         * If the exact stack isn't found, find any shield.
+         * Fallback:
          *
-         * This is a fallback for cases where Minecraft has changed
-         * a stack's metadata/components while the player was using
-         * it.
+         * If Minecraft changed the stack's data/components,
+         * find any shield rather than getting stuck forever.
          */
         for (int slot = 0;
              slot < inventory.getContainerSize();
@@ -730,6 +792,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
             ItemStack stack =
                     inventory.getItem(slot);
+
 
             if (stack.is(Items.SHIELD)) {
 
@@ -744,7 +807,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
     /*
      * ============================================================
-     * RESET
+     * RESET STATE
      * ============================================================
      */
 
