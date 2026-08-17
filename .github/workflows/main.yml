@@ -24,5 +24,11 @@ jobs:
         with:
           gradle-version: '9.7.0'
 
-      - name: Inspect Minecraft 26.1.2 API
-        run: gradle inspectMinecraftApi
+      - name: Build
+        run: gradle build
+
+      - name: Upload JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: AutoTotemShield-26.1.2
+          path: build/libs/*.jar
