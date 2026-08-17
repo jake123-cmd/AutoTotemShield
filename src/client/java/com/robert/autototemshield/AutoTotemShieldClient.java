@@ -1,12 +1,10 @@
-# AutoTotemShieldClient.java
-
-```java
 package com.robert.autototemshield;
 
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.minecraft.client.Minecraft;
 import net.minecraft.world.entity.EquipmentSlot;
+import net.minecraft.world.entity.monster.Monster;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.inventory.ContainerInput;
@@ -64,29 +62,18 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
     /*
      * ============================================================
-     * MOB DANGER
+     * HOSTILE MOB DANGER
      * ============================================================
      *
-     * This is deliberately conservative.
+     * Only actual hostile Monster entities count.
      *
-     * We don't want one zombie hitting the player at 10 hearts
-     * to constantly switch shield/Totem.
-     *
-     * Instead, mob danger only matters when the player is already
-     * taking serious damage / is surrounded.
+     * Passive mobs such as cows, pigs and sheep do NOT count.
      */
 
     private static final double MOB_DANGER_HEALTH = 10.0D;
 
-    /*
-     * Number of nearby hostile mobs required before this condition
-     * becomes active.
-     */
     private static final int MOB_DANGER_COUNT = 8;
 
-    /*
-     * Radius used for nearby hostile mobs.
-     */
     private static final double MOB_DANGER_RADIUS = 8.0D;
 
 
@@ -118,7 +105,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
     /*
      * True when emergency mode is being maintained because of
-     * severe mob danger.
+     * severe hostile-mob danger.
      */
     private boolean mobEmergencyActive = false;
 
@@ -339,8 +326,6 @@ public class AutoTotemShieldClient implements ClientModInitializer {
          * IMPORTANT:
          *
          * fallDistance is DOUBLE in this Minecraft version.
-         *
-         * This fixes the previous compile error.
          */
 
         boolean airborne =
@@ -390,7 +375,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
          * If the player is actually in lava, health alone is not
          * enough to decide whether the Totem should be removed.
          *
-         * We keep it equipped until the player is safely out.
+         * Keep the Totem equipped until safely out of lava.
          */
 
         boolean inLava =
@@ -404,16 +389,15 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
         /*
          * ========================================================
-         * MOB DANGER
+         * HOSTILE MOB DANGER
          * ========================================================
          *
-         * We only use this as an extra safety layer when:
+         * We only activate this when:
          *
-         * - health is already below 10 hearts
-         * - AND there are many nearby hostile mobs.
+         * - health is 10 hearts or lower
+         * - AND at least 8 hostile mobs are nearby.
          *
-         * This prevents the system from switching just because
-         * one mob happens to be nearby.
+         * Passive mobs do NOT count.
          */
 
         int nearbyHostiles =
@@ -643,13 +627,13 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
         /*
          * ========================================================
-         * MAINTAIN MOB EMERGENCY
+         * MAINTAIN HOSTILE MOB EMERGENCY
          * ========================================================
          *
          * Don't immediately return the shield just because health
          * crossed the normal return threshold.
          *
-         * We require the mob danger to actually disappear.
+         * The hostile-mob danger must actually disappear.
          */
 
         if (mobEmergencyActive) {
@@ -690,7 +674,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
             /*
-             * Danger has reduced.
+             * Hostile-mob danger has reduced.
              */
             mobEmergencyActive = false;
         }
@@ -703,10 +687,10 @@ public class AutoTotemShieldClient implements ClientModInitializer {
          *
          * Normal behaviour:
          *
-         * trigger at low health
-         * return after Return Health
+         * trigger at configured low health
+         * return after configured Return Health
          *
-         * But environmental emergencies must be finished first.
+         * Environmental emergencies must be finished first.
          */
 
         if (emergencyActive
@@ -842,20 +826,17 @@ public class AutoTotemShieldClient implements ClientModInitializer {
      * ============================================================
      * COUNT NEARBY HOSTILE MOBS
      * ============================================================
+     *
+     * Only actual hostile Monster entities count.
+     *
+     * Passive mobs do NOT count.
      */
 
     private int countNearbyHostiles(Player player) {
 
-        if (player.level() == null) {
-
-            return 0;
-        }
-
-
         double radiusSquared =
                 MOB_DANGER_RADIUS
                         * MOB_DANGER_RADIUS;
-
 
         int count = 0;
 
@@ -872,36 +853,41 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
             /*
-             * Only living entities count as threats.
+             * Only actual hostile Monster entities.
              */
-            if (!(entity instanceof net.minecraft.world.entity.LivingEntity living)) {
+            if (!(entity instanceof Monster monster)) {
                 continue;
             }
 
 
             /*
-             * Ignore friendly/passive mobs.
-             *
-             * Mob hostility is checked using the player's target
-             * relationship rather than assuming every mob is hostile.
+             * Must be alive.
              */
-            if (!player.isAlliedTo(living)
-                    && living.isAlive()
-                    && living.distanceToSqr(player) <= radiusSquared) {
+            if (!monster.isAlive()) {
+                continue;
+            }
 
-                /*
-                 * Don't count armor stands or other non-combat
-                 * living entities.
-                 */
-                if (living instanceof net.minecraft.world.entity.Mob) {
 
-                    count++;
+            /*
+             * Must be inside the danger radius.
+             */
+            if (monster.distanceToSqr(player)
+                    > radiusSquared) {
 
-                    if (count >= MOB_DANGER_COUNT) {
+                continue;
+            }
 
-                        return count;
-                    }
-                }
+
+            count++;
+
+
+            /*
+             * We only need to know whether the threshold
+             * of 8 has been reached.
+             */
+            if (count >= MOB_DANGER_COUNT) {
+
+                return count;
             }
         }
 
@@ -945,6 +931,17 @@ public class AutoTotemShieldClient implements ClientModInitializer {
      * ============================================================
      * INVENTORY SLOT -> MENU SLOT
      * ============================================================
+     *
+     * Player inventory:
+     *
+     * 0-8   = hotbar
+     * 9-35  = main inventory
+     *
+     * Player menu:
+     *
+     * 36-44 = hotbar
+     * 9-35  = main inventory
+     * 45    = offhand
      */
 
     private int inventorySlotToMenuSlot(
@@ -1229,4 +1226,3 @@ public class AutoTotemShieldClient implements ClientModInitializer {
         savedShield = ItemStack.EMPTY;
     }
 }
-```
