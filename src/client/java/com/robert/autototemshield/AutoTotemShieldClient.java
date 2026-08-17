@@ -18,20 +18,54 @@ public class AutoTotemShieldClient implements ClientModInitializer {
      * ============================================================
      */
 
+    /*
+     * Verify inventory swaps on the following tick.
+     */
     private static final int VERIFY_DELAY_TICKS = 1;
 
+    /*
+     * Small delay between failed/repeated inventory operations.
+     */
     private static final int RETRY_COOLDOWN_TICKS = 2;
 
     /*
-     * Start preparing the Totem while falling.
+     * ============================================================
+     * DANGEROUS FALL DETECTION
+     * ============================================================
+     *
+     * IMPORTANT:
+     *
+     * We DO NOT trigger simply because the player is moving
+     * downward.
+     *
+     * That caused the old:
+     *
+     * Shield -> Totem -> Shield -> Totem
+     *
+     * problem when walking down stairs or small ledges.
+     *
+     * The player must have already fallen a meaningful distance
+     * AND still be descending.
      */
-    private static final double FALL_SPEED_TRIGGER = -0.35D;
 
     /*
-     * Faster fall = even more urgent.
+     * Minimum fall distance before we consider the fall dangerous.
+     *
+     * 4 blocks is intentionally used so normal steps, stairs,
+     * slabs and tiny ledges don't trigger the system.
      */
-    private static final double FAST_FALL_TRIGGER = -0.70D;
+    private static final float DANGEROUS_FALL_DISTANCE = 4.0F;
 
+    /*
+     * Player must still be moving downward.
+     */
+    private static final double DANGEROUS_FALL_SPEED = -0.45D;
+
+    /*
+     * Very fast falling can trigger slightly earlier, but still
+     * requires some actual fall distance.
+     */
+    private static final double VERY_FAST_FALL_SPEED = -0.90D;
 
     /*
      * ============================================================
@@ -39,18 +73,41 @@ public class AutoTotemShieldClient implements ClientModInitializer {
      * ============================================================
      */
 
+    /*
+     * True while the emergency system is active.
+     */
     private boolean emergencyActive = false;
 
+    /*
+     * True when we're currently trying to put the shield back.
+     */
     private boolean returningShield = false;
 
+    /*
+     * True while waiting to verify a Totem swap.
+     */
     private boolean waitingForTotemVerification = false;
 
+    /*
+     * True while waiting to verify a shield swap.
+     */
     private boolean waitingForShieldVerification = false;
 
+    /*
+     * Inventory operation cooldown.
+     */
     private int operationCooldown = 0;
 
     /*
-     * The shield that was originally in the offhand.
+     * True if emergency mode was caused by a dangerous fall.
+     *
+     * This is important because we must NOT restore the shield
+     * while the player is still airborne.
+     */
+    private boolean fallEmergencyActive = false;
+
+    /*
+     * The original shield.
      */
     private ItemStack savedShield = ItemStack.EMPTY;
 
@@ -112,11 +169,8 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
         /*
-         * Don't perform inventory clicks while a chest,
-         * crafting table, furnace, etc. is open.
-         *
-         * This prevents the mod from accidentally clicking
-         * another container.
+         * Never perform inventory operations while another
+         * container/screen is open.
          */
         if (client.screen != null) {
             return;
@@ -124,25 +178,33 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
         /*
-         * Cooldown between inventory operations.
+         * Cooldown.
          */
         if (operationCooldown > 0) {
             operationCooldown--;
         }
 
 
+        /*
+         * Current health.
+         */
         float health =
                 player.getHealth();
 
 
+        /*
+         * Configured health thresholds.
+         */
         double triggerHealth =
                 AutoTotemShieldConfig.triggerHearts * 2.0D;
-
 
         double returnHealth =
                 AutoTotemShieldConfig.returnHearts * 2.0D;
 
 
+        /*
+         * Actual offhand.
+         */
         ItemStack offhand =
                 player.getItemBySlot(
                         EquipmentSlot.OFFHAND
@@ -153,19 +215,15 @@ public class AutoTotemShieldClient implements ClientModInitializer {
          * ========================================================
          * VERIFY TOTEM SWAP
          * ========================================================
-         *
-         * We NEVER assume the swap succeeded.
-         *
-         * We check the actual offhand slot.
          */
 
         if (waitingForTotemVerification) {
 
+            /*
+             * SUCCESS.
+             */
             if (offhand.is(Items.TOTEM_OF_UNDYING)) {
 
-                /*
-                 * SUCCESS.
-                 */
                 waitingForTotemVerification = false;
 
                 return;
@@ -173,15 +231,17 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
             /*
-             * Swap did not appear in the offhand.
+             * Swap didn't appear to succeed.
              *
-             * Retry after cooldown.
+             * Retry.
              */
             if (operationCooldown == 0) {
 
                 waitingForTotemVerification = false;
 
-                if (putTotemInOffhand(client, player)) {
+                if (putTotemInOffhand(
+                        client,
+                        player)) {
 
                     operationCooldown =
                             RETRY_COOLDOWN_TICKS;
@@ -200,16 +260,18 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
         if (waitingForShieldVerification) {
 
+            /*
+             * SUCCESS.
+             */
             if (offhand.is(Items.SHIELD)) {
 
-                /*
-                 * SUCCESS.
-                 */
                 waitingForShieldVerification = false;
 
                 returningShield = false;
 
                 emergencyActive = false;
+
+                fallEmergencyActive = false;
 
                 savedShield = ItemStack.EMPTY;
 
@@ -218,13 +280,15 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
             /*
-             * Shield wasn't restored.
+             * Shield wasn't restored yet.
              */
             if (operationCooldown == 0) {
 
                 waitingForShieldVerification = false;
 
-                if (restoreShield(client, player)) {
+                if (restoreShield(
+                        client,
+                        player)) {
 
                     operationCooldown =
                             RETRY_COOLDOWN_TICKS;
@@ -237,7 +301,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
         /*
          * ========================================================
-         * HEALTH / FALL DETECTION
+         * HEALTH DETECTION
          * ========================================================
          */
 
@@ -245,41 +309,93 @@ public class AutoTotemShieldClient implements ClientModInitializer {
                 health <= triggerHealth;
 
 
-        boolean falling =
-                !player.onGround()
-                        && player.getDeltaMovement().y
-                        < FALL_SPEED_TRIGGER;
+        /*
+         * ========================================================
+         * DANGEROUS FALL DETECTION
+         * ========================================================
+         *
+         * THIS IS THE IMPORTANT FIX.
+         *
+         * We don't care about merely moving downward.
+         *
+         * Walking down:
+         *
+         *   stairs
+         *   slabs
+         *   small ledges
+         *   terrain
+         *
+         * should NOT activate the Totem.
+         *
+         * We require:
+         *
+         * 1. Player is airborne.
+         * 2. Player has fallen at least ~4 blocks.
+         * 3. Player is still descending.
+         *
+         * A very fast fall can trigger using a slightly more
+         * aggressive path, but it STILL requires fall distance.
+         */
+
+        boolean airborne =
+                !player.onGround();
 
 
-        boolean extremelyFastFall =
-                !player.onGround()
-                        && player.getDeltaMovement().y
-                        < FAST_FALL_TRIGGER;
+        float fallDistance =
+                player.fallDistance;
+
+
+        double verticalVelocity =
+                player.getDeltaMovement().y;
+
+
+        boolean dangerousFall =
+                airborne
+                        && fallDistance >= DANGEROUS_FALL_DISTANCE
+                        && verticalVelocity <= DANGEROUS_FALL_SPEED;
 
 
         /*
-         * Emergency can therefore be triggered by:
+         * Very fast fall:
          *
-         * - low health
-         * - falling
-         * - very fast falling
+         * We still require at least 2 blocks of fall distance.
          *
-         * This doesn't care what caused previous damage.
+         * This catches extremely fast drops without triggering
+         * from normal walking movement.
          */
-        boolean emergency =
-                lowHealth
-                        || falling
-                        || extremelyFastFall;
+        boolean veryFastDangerousFall =
+                airborne
+                        && fallDistance >= 2.0F
+                        && verticalVelocity <= VERY_FAST_FALL_SPEED;
+
+
+        dangerousFall =
+                dangerousFall
+                        || veryFastDangerousFall;
 
 
         /*
          * ========================================================
-         * EMERGENCY
+         * EMERGENCY START
          * ========================================================
          */
 
-        if (emergency) {
+        if (lowHealth || dangerousFall) {
 
+            /*
+             * A fall emergency is different from ordinary
+             * low-health emergency.
+             */
+            if (dangerousFall) {
+
+                fallEmergencyActive = true;
+            }
+
+
+            /*
+             * Never start returning the shield while emergency
+             * conditions are active.
+             */
             returningShield = false;
 
 
@@ -294,10 +410,9 @@ public class AutoTotemShieldClient implements ClientModInitializer {
                 /*
                  * Already have a Totem.
                  *
-                 * DO NOT TOUCH IT.
+                 * DO NOTHING.
                  *
-                 * This prevents the shield/Totem from repeatedly
-                 * phasing over each other.
+                 * This is extremely important.
                  */
                 if (offhand.is(Items.TOTEM_OF_UNDYING)) {
 
@@ -308,9 +423,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
                 /*
-                 * First emergency detection.
-                 *
-                 * Save the actual shield.
+                 * Save the original shield only once.
                  */
                 if (!emergencyActive
                         && offhand.is(Items.SHIELD)) {
@@ -323,9 +436,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
                 /*
-                 * Emergency is active but the Totem isn't equipped.
-                 *
-                 * Use a real Minecraft inventory swap.
+                 * Emergency is active and Totem isn't equipped.
                  */
                 if (emergencyActive
                         && !offhand.is(Items.TOTEM_OF_UNDYING)
@@ -374,10 +485,74 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
         /*
          * ========================================================
+         * FALL EMERGENCY PROTECTION
+         * ========================================================
+         *
+         * If the Totem was equipped because of a dangerous fall,
+         * NEVER restore the shield while still airborne.
+         *
+         * This prevents:
+         *
+         * Totem -> Shield -> Totem
+         *
+         * during a fall.
+         */
+
+        if (fallEmergencyActive) {
+
+            /*
+             * Still airborne.
+             *
+             * Keep Totem equipped.
+             */
+            if (!player.onGround()) {
+
+                /*
+                 * If the Totem is already equipped, leave it alone.
+                 */
+                if (offhand.is(Items.TOTEM_OF_UNDYING)) {
+
+                    return;
+                }
+
+
+                /*
+                 * If it somehow disappeared while still falling,
+                 * try to equip another one.
+                 */
+                if (operationCooldown == 0) {
+
+                    if (putTotemInOffhand(
+                            client,
+                            player)) {
+
+                        operationCooldown =
+                                VERIFY_DELAY_TICKS;
+                    }
+                }
+
+                return;
+            }
+
+
+            /*
+             * We are now on the ground.
+             *
+             * The dangerous fall is over.
+             */
+            fallEmergencyActive = false;
+        }
+
+
+        /*
+         * ========================================================
          * RETURN TO SHIELD
          * ========================================================
          *
-         * We only restore after Return Health.
+         * The shield is restored ONLY after Return Health.
+         *
+         * For fall emergencies, the player must ALSO be safely
+         * on the ground.
          */
 
         if (emergencyActive
@@ -385,7 +560,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
             /*
-             * User disabled shield restoration.
+             * Return-to-shield disabled.
              */
             if (!AutoTotemShieldConfig.returnToShield) {
 
@@ -393,7 +568,18 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
                 returningShield = false;
 
+                fallEmergencyActive = false;
+
                 savedShield = ItemStack.EMPTY;
+
+                return;
+            }
+
+
+            /*
+             * Absolutely do not restore while airborne.
+             */
+            if (!player.onGround()) {
 
                 return;
             }
@@ -406,7 +592,8 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
             /*
-             * Only swap if the Totem is actually there.
+             * Only restore if the Totem is actually occupying
+             * the offhand.
              */
             if (offhand.is(Items.TOTEM_OF_UNDYING)) {
 
@@ -428,31 +615,71 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
             /*
-             * If the Totem was consumed and the offhand is now
-             * empty, don't blindly overwrite it.
+             * Empty offhand:
              *
-             * The player may have manually changed something.
+             * The Totem was probably consumed.
+             *
+             * If restocking is enabled, keep emergency mode alive
+             * and try to put another Totem there rather than
+             * instantly restoring the shield.
              */
             if (offhand.isEmpty()) {
 
-                emergencyActive = false;
+                if (AutoTotemShieldConfig.restockTotem
+                        && operationCooldown == 0) {
 
-                returningShield = false;
+                    if (putTotemInOffhand(
+                            client,
+                            player)) {
 
-                savedShield = ItemStack.EMPTY;
+                        operationCooldown =
+                                VERIFY_DELAY_TICKS;
 
+                        return;
+                    }
+                }
+
+
+                /*
+                 * No replacement Totem available.
+                 *
+                 * At this point we can safely restore the shield
+                 * if one was saved.
+                 */
+                if (operationCooldown == 0) {
+
+                    if (restoreShield(
+                            client,
+                            player)) {
+
+                        returningShield = true;
+
+                        operationCooldown =
+                                VERIFY_DELAY_TICKS;
+
+                        return;
+                    }
+                }
+
+
+                /*
+                 * Nothing else we can safely do.
+                 */
                 return;
             }
 
 
             /*
-             * Player put something else in the offhand.
+             * Player deliberately put another item in the
+             * offhand.
              *
-             * Respect the player's action.
+             * Respect the player.
              */
             emergencyActive = false;
 
             returningShield = false;
+
+            fallEmergencyActive = false;
 
             savedShield = ItemStack.EMPTY;
 
@@ -473,15 +700,6 @@ public class AutoTotemShieldClient implements ClientModInitializer {
                 player.getInventory();
 
 
-        /*
-         * Search the entire player inventory.
-         *
-         * 1 Totem = usable.
-         * 3 Totems = usable.
-         * 20 Totems = usable.
-         *
-         * minimumTotems is NOT used as an emergency blocker.
-         */
         for (int slot = 0;
              slot < inventory.getContainerSize();
              slot++) {
@@ -503,7 +721,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
     /*
      * ============================================================
-     * INVENTORY SLOT -> PLAYER MENU SLOT
+     * INVENTORY SLOT -> MENU SLOT
      * ============================================================
      *
      * Player inventory:
@@ -511,7 +729,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
      * 0-8   = hotbar
      * 9-35  = main inventory
      *
-     * Player inventory menu:
+     * Player menu:
      *
      * 9-35  = main inventory
      * 36-44 = hotbar
@@ -555,9 +773,6 @@ public class AutoTotemShieldClient implements ClientModInitializer {
             Minecraft client,
             Player player) {
 
-        /*
-         * No game mode = don't touch inventory.
-         */
         if (client.gameMode == null) {
 
             return false;
@@ -582,7 +797,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
         /*
-         * Find an available Totem.
+         * Find Totem.
          */
         int inventorySlot =
                 findTotemSlot(player);
@@ -590,9 +805,6 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
         if (inventorySlot == -1) {
 
-            /*
-             * No Totem available.
-             */
             return false;
         }
 
@@ -610,18 +822,9 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
         /*
-         * ========================================================
-         * REAL MINECRAFT INVENTORY OPERATION
-         * ========================================================
+         * REAL Minecraft inventory operation.
          *
-         * 40 = offhand swap button.
-         *
-         * ContainerInput.SWAP tells Minecraft to perform the
-         * actual inventory swap instead of us directly changing
-         * the player's slot.
-         *
-         * Minecraft 26.1.x exposes this through
-         * MultiPlayerGameMode.handleContainerInput().
+         * Button 40 = offhand swap.
          */
         client.gameMode.handleContainerInput(
                 player.inventoryMenu.containerId,
@@ -633,9 +836,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
         /*
-         * We DON'T claim it worked.
-         *
-         * The next tick verifies the actual offhand.
+         * Do not assume success.
          */
         waitingForTotemVerification = true;
 
@@ -655,7 +856,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
             Player player) {
 
         /*
-         * Nothing saved.
+         * No saved shield.
          */
         if (savedShield.isEmpty()) {
 
@@ -679,8 +880,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
         /*
-         * We only move the shield back if the Totem is actually
-         * occupying the offhand.
+         * Only swap if Totem is actually in offhand.
          */
         if (!offhand.is(Items.TOTEM_OF_UNDYING)) {
 
@@ -693,7 +893,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
         /*
-         * Find the saved shield in the inventory.
+         * Find our shield.
          */
         int shieldSlot =
                 findSavedShieldSlot(
@@ -720,11 +920,9 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
         /*
-         * Swap:
+         * Real Minecraft inventory swap:
          *
-         * inventory shield <-> offhand Totem
-         *
-         * Minecraft handles the actual transaction.
+         * shield <-> offhand Totem.
          */
         client.gameMode.handleContainerInput(
                 player.inventoryMenu.containerId,
@@ -736,7 +934,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
         /*
-         * Verify next tick.
+         * Verify on next tick.
          */
         waitingForShieldVerification = true;
 
@@ -756,7 +954,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
 
 
         /*
-         * First look for the exact saved stack.
+         * First try to find the exact original shield.
          */
         for (int slot = 0;
              slot < inventory.getContainerSize();
@@ -783,8 +981,7 @@ public class AutoTotemShieldClient implements ClientModInitializer {
         /*
          * Fallback:
          *
-         * If Minecraft changed the stack's data/components,
-         * find any shield rather than getting stuck forever.
+         * Any shield is better than getting permanently stuck.
          */
         for (int slot = 0;
              slot < inventory.getContainerSize();
@@ -820,6 +1017,8 @@ public class AutoTotemShieldClient implements ClientModInitializer {
         waitingForTotemVerification = false;
 
         waitingForShieldVerification = false;
+
+        fallEmergencyActive = false;
 
         operationCooldown = 0;
 
