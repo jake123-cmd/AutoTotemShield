@@ -12,29 +12,114 @@ import net.minecraft.world.item.Items;
 public class AutoTotemShieldClient implements ClientModInitializer {
 
     /*
-     * 1 Minecraft tick = 50ms.
+     * ============================================================
+     * AUTO TOTEM SHIELD - FAILSAFE EDITION
+     * Minecraft 26.1.2
+     * ============================================================
      *
-     * This gives Minecraft one tick to finish an inventory
-     * change without adding a noticeable delay.
+     * Core logic:
+     *
+     *   Shield normally equipped
+     *          ↓
+     *   Health <= Trigger Health
+     *          ↓
+     *   Emergency Totem mode
+     *          ↓
+     *   Keep Totem equipped while unsafe
+     *          ↓
+     *   Totem consumed?
+     *          ↓
+     *   Immediately find another
+     *          ↓
+     *   Health >= Return Health
+     *          ↓
+     *   Restore original shield
+     *
+     * The damage source does NOT matter.
+     *
+     * Fall damage       -> health check
+     * Mob damage        -> health check
+     * Player damage     -> health check
+     * Lava              -> health check
+     * Fire              -> health check
+     * Drowning          -> health check
+     * Explosion         -> health check
+     * Projectile        -> health check
+     * Poison            -> health check
+     * Wither            -> health check
+     * Suffocation       -> health check
+     * etc.
+     *
+     * Everything ultimately goes through the same emergency
+     * health system.
      */
-    private static final int SAFETY_DELAY_TICKS = 1;
 
-    private boolean shieldWasSwapped = false;
-    private int tickDelay = 0;
 
     /*
-     * The exact shield that was in the offhand before
-     * the emergency Totem swap.
+     * ============================================================
+     * TIMING
+     * ============================================================
+     *
+     * We intentionally do NOT wait before the first emergency
+     * attempt.
+     *
+     * This is only used after a successful inventory operation
+     * so Minecraft gets a tick to settle the change.
+     */
+    private static final int POST_OPERATION_DELAY = 1;
+
+
+    /*
+     * ============================================================
+     * EMERGENCY STATE
+     * ============================================================
+     */
+
+    private boolean emergencyMode = false;
+
+    /*
+     * True only when we actually saved a shield.
+     */
+    private boolean shieldSaved = false;
+
+    /*
+     * Exact shield, including durability/components.
      */
     private ItemStack savedShield = ItemStack.EMPTY;
 
+    /*
+     * Prevents us from repeatedly trying to restore the shield
+     * when the inventory is completely full.
+     */
+    private int operationDelay = 0;
+
+
+    /*
+     * ============================================================
+     * INITIALIZATION
+     * ============================================================
+     */
+
     @Override
     public void onInitializeClient() {
-        ClientTickEvents.END_CLIENT_TICK.register(this::tick);
+
+        ClientTickEvents.END_CLIENT_TICK.register(
+                this::tick
+        );
     }
+
+
+    /*
+     * ============================================================
+     * MAIN TICK
+     * ============================================================
+     */
 
     private void tick(Minecraft client) {
 
+        /*
+         * No world/player.
+         */
         if (client.player == null || client.level == null) {
             return;
         }
@@ -46,322 +131,613 @@ public class AutoTotemShieldClient implements ClientModInitializer {
             return;
         }
 
+        Player player = client.player;
+
         /*
-         * Small safety delay after an inventory operation.
+         * Never manipulate inventory after health has reached zero.
          */
-        if (tickDelay > 0) {
-            tickDelay--;
+        if (player.getHealth() <= 0.0F) {
+            emergencyMode = false;
             return;
         }
 
-        Player player = client.player;
+        /*
+         * ========================================================
+         * HEALTH VALUES
+         * ========================================================
+         *
+         * Config uses hearts.
+         *
+         * Minecraft health uses half-hearts.
+         *
+         * 3 hearts = 6 health
+         * 6 hearts = 12 health
+         */
+
+        float triggerHealth =
+                (float) (
+                        AutoTotemShieldConfig.triggerHearts * 2.0
+                );
+
+        float returnHealth =
+                (float) (
+                        AutoTotemShieldConfig.returnHearts * 2.0
+                );
+
+
+        /*
+         * Safety:
+         *
+         * Return Health can NEVER be below Trigger Health.
+         */
+        if (returnHealth < triggerHealth) {
+            returnHealth = triggerHealth;
+        }
+
 
         float health = player.getHealth();
 
-        /*
-         * Config uses hearts.
-         *
-         * Minecraft uses half-hearts.
-         *
-         * 3 hearts = 6 health.
-         */
-        float healthThreshold =
-                (float) (AutoTotemShieldConfig.triggerHearts * 2.0);
-
-        ItemStack offhand =
-                player.getItemBySlot(EquipmentSlot.OFFHAND);
 
         /*
-         * =========================================================
-         * LOW HEALTH
-         * =========================================================
+         * ========================================================
+         * EMERGENCY TRIGGER
+         * ========================================================
+         *
+         * This check happens BEFORE the normal operation delay.
+         *
+         * If we are dying, emergency protection gets priority.
          */
-        if (health <= healthThreshold) {
 
-            /*
-             * We have not started the emergency Totem state yet.
-             */
-            if (!shieldWasSwapped) {
+        if (health <= triggerHealth) {
 
-                /*
-                 * Shield Required ON:
-                 *
-                 * Only activate when a shield is in the offhand.
-                 */
-                if (AutoTotemShieldConfig.shieldRequired) {
+            emergencyMode = true;
 
-                    if (offhand.is(Items.SHIELD)) {
-
-                        if (swapShieldForTotem(player)) {
-
-                            shieldWasSwapped = true;
-                            tickDelay = SAFETY_DELAY_TICKS;
-                        }
-                    }
-                }
-
-                /*
-                 * Shield Required OFF:
-                 *
-                 * Put a Totem into the offhand even if there
-                 * isn't currently a shield there.
-                 */
-                else {
-
-                    if (!offhand.is(Items.TOTEM_OF_UNDYING)) {
-
-                        if (putFirstTotemInOffhand(player)) {
-
-                            shieldWasSwapped = true;
-                            tickDelay = SAFETY_DELAY_TICKS;
-                        }
-                    }
-                }
-            }
-
-            /*
-             * =====================================================
-             * RESTOCK
-             * =====================================================
-             *
-             * If our Totem was consumed while we're still below
-             * the health threshold, immediately search for another.
-             */
-            if (shieldWasSwapped
-                    && AutoTotemShieldConfig.restockTotem) {
-
-                offhand =
-                        player.getItemBySlot(EquipmentSlot.OFFHAND);
-
-                /*
-                 * The Totem has disappeared.
-                 *
-                 * Only restock when the offhand is EMPTY.
-                 *
-                 * This prevents the mod from overwriting something
-                 * the player deliberately put there.
-                 */
-                if (offhand.isEmpty()) {
-
-                    if (putFirstTotemInOffhand(player)) {
-                        tickDelay = SAFETY_DELAY_TICKS;
-                    }
-                }
-            }
+            emergencyTick(player);
 
             return;
         }
 
-        /*
-         * =========================================================
-         * HEALTH SAFE AGAIN
-         * =========================================================
-         */
-        if (shieldWasSwapped) {
 
-            offhand =
-                    player.getItemBySlot(EquipmentSlot.OFFHAND);
+        /*
+         * ========================================================
+         * EMERGENCY RECOVERY
+         * ========================================================
+         */
+
+        if (emergencyMode) {
 
             /*
-             * Return the original shield if enabled.
+             * We haven't reached safe health yet.
+             *
+             * Keep Totem protection active.
              */
-            if (AutoTotemShieldConfig.returnToShield) {
+            if (health < returnHealth) {
 
-                /*
-                 * Only restore if the offhand is still occupied
-                 * by our Totem or is empty.
-                 */
-                if (offhand.is(Items.TOTEM_OF_UNDYING)
-                        || offhand.isEmpty()) {
+                emergencyTick(player);
 
-                    if (putShieldBack(player)) {
-
-                        shieldWasSwapped = false;
-                        tickDelay = SAFETY_DELAY_TICKS;
-                    }
-                }
-
-                else {
-
-                    /*
-                     * Player manually changed the offhand.
-                     * Respect their choice.
-                     */
-                    shieldWasSwapped = false;
-                    savedShield = ItemStack.EMPTY;
-                }
+                return;
             }
+
 
             /*
-             * Return-to-shield disabled.
+             * We are finally healthy enough to restore
+             * the shield.
              */
-            else {
-                shieldWasSwapped = false;
+            if (health >= returnHealth) {
+
+                if (operationDelay > 0) {
+
+                    operationDelay--;
+
+                    return;
+                }
+
+                restoreShield(player);
+
+                return;
             }
+        }
+
+
+        /*
+         * ========================================================
+         * NORMAL OPERATION DELAY
+         * ========================================================
+         */
+
+        if (operationDelay > 0) {
+            operationDelay--;
         }
     }
 
+
     /*
-     * =============================================================
-     * SHIELD -> TOTEM
-     * =============================================================
+     * ============================================================
+     * EMERGENCY TICK
+     * ============================================================
      */
-    private boolean swapShieldForTotem(Player player) {
 
-        Inventory inv = player.getInventory();
+    private void emergencyTick(Player player) {
 
-        for (int i = 0; i < inv.getContainerSize(); i++) {
-
-            ItemStack stack = inv.getItem(i);
-
-            if (stack.is(Items.TOTEM_OF_UNDYING)) {
-
-                /*
-                 * Save the exact shield, including durability.
-                 */
-                savedShield =
-                        player.getItemBySlot(
-                                EquipmentSlot.OFFHAND
-                        ).copy();
-
-                /*
-                 * Take exactly one Totem.
-                 */
-                ItemStack totem = stack.copy();
-                totem.setCount(1);
-
-                stack.shrink(1);
-
-                player.setItemSlot(
-                        EquipmentSlot.OFFHAND,
-                        totem
+        ItemStack offhand =
+                player.getItemBySlot(
+                        EquipmentSlot.OFFHAND
                 );
 
-                return true;
+
+        /*
+         * ========================================================
+         * ALREADY HAVE TOTEM
+         * ========================================================
+         *
+         * Perfect.
+         *
+         * Do nothing.
+         */
+        if (offhand.is(Items.TOTEM_OF_UNDYING)) {
+            return;
+        }
+
+
+        /*
+         * ========================================================
+         * SHIELD REQUIRED
+         * ========================================================
+         */
+
+        if (AutoTotemShieldConfig.shieldRequired) {
+
+            /*
+             * If the player manually removed the shield before
+             * emergency mode started, respect that.
+             */
+            if (!offhand.is(Items.SHIELD)) {
+
+                /*
+                 * If we previously saved a shield, we're already
+                 * in an emergency sequence, so don't cancel it.
+                 */
+                if (!shieldSaved) {
+                    return;
+                }
             }
         }
 
-        return false;
+
+        /*
+         * ========================================================
+         * SAVE SHIELD
+         * ========================================================
+         *
+         * Save exactly once.
+         */
+
+        if (!shieldSaved && offhand.is(Items.SHIELD)) {
+
+            savedShield = offhand.copy();
+
+            shieldSaved = true;
+        }
+
+
+        /*
+         * ========================================================
+         * GET TOTEM
+         * ========================================================
+         *
+         * IMPORTANT:
+         *
+         * minimumTotems is deliberately NOT checked.
+         *
+         * If you have:
+         *
+         * 1 Totem -> use it
+         * 2 Totems -> use one
+         * 20 Totems -> use one
+         */
+
+        if (putTotemInOffhand(player)) {
+
+            operationDelay =
+                    POST_OPERATION_DELAY;
+
+            return;
+        }
+
+
+        /*
+         * No Totem found.
+         *
+         * Stay in emergency mode.
+         *
+         * The method will search again on the next tick.
+         */
     }
 
-    /*
-     * =============================================================
-     * FIND TOTEM
-     * =============================================================
-     */
-    private boolean putFirstTotemInOffhand(Player player) {
-
-        Inventory inv = player.getInventory();
-
-        int totalTotems = 0;
-
-        /*
-         * Count all Totems in the inventory.
-         */
-        for (int i = 0; i < inv.getContainerSize(); i++) {
-
-            ItemStack stack = inv.getItem(i);
-
-            if (stack.is(Items.TOTEM_OF_UNDYING)) {
-                totalTotems += stack.getCount();
-            }
-        }
-
-        /*
-         * Respect Minimum Totems.
-         *
-         * Minimum Totems = 0:
-         * Take a Totem whenever one is available.
-         *
-         * Minimum Totems = 2:
-         * Leave at least 2 Totems in the inventory.
-         */
-        if (totalTotems <= AutoTotemShieldConfig.minimumTotems) {
-            return false;
-        }
-
-        /*
-         * Find the first Totem.
-         */
-        for (int i = 0; i < inv.getContainerSize(); i++) {
-
-            ItemStack stack = inv.getItem(i);
-
-            if (stack.is(Items.TOTEM_OF_UNDYING)) {
-
-                ItemStack totem = stack.copy();
-                totem.setCount(1);
-
-                stack.shrink(1);
-
-                player.setItemSlot(
-                        EquipmentSlot.OFFHAND,
-                        totem
-                );
-
-                return true;
-            }
-        }
-
-        return false;
-    }
 
     /*
-     * =============================================================
-     * TOTEM -> SHIELD
-     * =============================================================
+     * ============================================================
+     * FIND + EQUIP TOTEM
+     * ============================================================
+     *
+     * IMPORTANT:
+     *
+     * We verify the result.
+     *
+     * We also remember the source slot so that if something
+     * unexpected happens and the offhand doesn't become a Totem,
+     * the removed Totem is put back.
      */
-    private boolean putShieldBack(Player player) {
 
-        if (savedShield.isEmpty()) {
-            return false;
-        }
+    private boolean putTotemInOffhand(Player player) {
 
-        Inventory inv = player.getInventory();
+        Inventory inventory =
+                player.getInventory();
 
+
+        /*
+         * Never replace a Totem that is already there.
+         */
         ItemStack currentOffhand =
                 player.getItemBySlot(
                         EquipmentSlot.OFFHAND
                 );
 
+        if (currentOffhand.is(Items.TOTEM_OF_UNDYING)) {
+            return true;
+        }
+
+
         /*
-         * First try to put the current Totem into an empty slot.
+         * Search the complete inventory.
          */
-        for (int i = 0; i < inv.getContainerSize(); i++) {
+        for (
+                int slot = 0;
+                slot < inventory.getContainerSize();
+                slot++
+        ) {
 
-            if (inv.getItem(i).isEmpty()) {
+            ItemStack stack =
+                    inventory.getItem(slot);
 
-                inv.setItem(i, currentOffhand);
 
-                player.setItemSlot(
-                        EquipmentSlot.OFFHAND,
-                        savedShield
-                );
+            /*
+             * Not a Totem.
+             */
+            if (!stack.is(Items.TOTEM_OF_UNDYING)) {
+                continue;
+            }
 
-                savedShield = ItemStack.EMPTY;
+
+            /*
+             * Empty for safety.
+             */
+            if (stack.isEmpty()) {
+                continue;
+            }
+
+
+            /*
+             * Take exactly ONE.
+             */
+            ItemStack totem =
+                    stack.split(1);
+
+
+            /*
+             * Put it into the offhand.
+             */
+            player.setItemSlot(
+                    EquipmentSlot.OFFHAND,
+                    totem
+            );
+
+
+            /*
+             * ====================================================
+             * VERIFY
+             * ====================================================
+             */
+
+            ItemStack resultingOffhand =
+                    player.getItemBySlot(
+                            EquipmentSlot.OFFHAND
+                    );
+
+
+            if (resultingOffhand.is(
+                    Items.TOTEM_OF_UNDYING
+            )) {
 
                 return true;
             }
+
+
+            /*
+             * ====================================================
+             * FAILED OPERATION
+             * ====================================================
+             *
+             * The Totem was removed from the source stack but
+             * didn't appear in the offhand.
+             *
+             * Put it back immediately.
+             */
+
+            ItemStack source =
+                    inventory.getItem(slot);
+
+            if (
+                    source.isEmpty()
+                            ||
+                    source.is(Items.TOTEM_OF_UNDYING)
+            ) {
+
+                if (source.isEmpty()) {
+
+                    inventory.setItem(
+                            slot,
+                            totem
+                    );
+
+                } else {
+
+                    /*
+                     * Try to merge it back.
+                     */
+                    source.grow(
+                            totem.getCount()
+                    );
+                }
+
+                return false;
+            }
+
+
+            /*
+             * If the source slot unexpectedly changed,
+             * search for an empty slot rather than destroying
+             * the Totem.
+             */
+            for (
+                    int backup = 0;
+                    backup < inventory.getContainerSize();
+                    backup++
+            ) {
+
+                if (inventory.getItem(backup).isEmpty()) {
+
+                    inventory.setItem(
+                            backup,
+                            totem
+                    );
+
+                    return false;
+                }
+            }
+
+
+            /*
+             * No safe destination.
+             *
+             * Keep the emergency state active and retry.
+             */
+            return false;
         }
 
+
         /*
-         * Inventory is completely full.
-         *
-         * Swap the Totem with the selected hotbar slot.
+         * No Totem anywhere in inventory.
          */
-        int selected = inv.getSelectedSlot();
+        return false;
+    }
 
-        ItemStack main = inv.getItem(selected);
 
-        inv.setItem(selected, currentOffhand);
+    /*
+     * ============================================================
+     * RESTORE SHIELD
+     * ============================================================
+     */
 
-        player.setItemSlot(
-                EquipmentSlot.OFFHAND,
-                savedShield
-        );
+    private void restoreShield(Player player) {
+
+        /*
+         * Return-to-shield disabled.
+         */
+        if (!AutoTotemShieldConfig.returnToShield) {
+
+            clearEmergencyState();
+
+            return;
+        }
+
+
+        /*
+         * Nothing saved.
+         */
+        if (!shieldSaved || savedShield.isEmpty()) {
+
+            clearEmergencyState();
+
+            return;
+        }
+
+
+        ItemStack offhand =
+                player.getItemBySlot(
+                        EquipmentSlot.OFFHAND
+                );
+
+
+        /*
+         * ========================================================
+         * PLAYER MANUALLY CHANGED OFFHAND
+         * ========================================================
+         *
+         * Never overwrite a deliberate player choice.
+         */
+        if (
+                !offhand.isEmpty()
+                        &&
+                !offhand.is(Items.TOTEM_OF_UNDYING)
+        ) {
+
+            clearEmergencyState();
+
+            return;
+        }
+
+
+        /*
+         * ========================================================
+         * OFFHAND IS EMPTY
+         * ========================================================
+         */
+
+        if (offhand.isEmpty()) {
+
+            player.setItemSlot(
+                    EquipmentSlot.OFFHAND,
+                    savedShield
+            );
+
+
+            /*
+             * Verify.
+             */
+            ItemStack verify =
+                    player.getItemBySlot(
+                            EquipmentSlot.OFFHAND
+                    );
+
+
+            if (verify.is(Items.SHIELD)) {
+
+                finishRestore();
+            }
+
+            return;
+        }
+
+
+        /*
+         * ========================================================
+         * OFFHAND HAS TOTEM
+         * ========================================================
+         */
+
+        if (offhand.is(Items.TOTEM_OF_UNDYING)) {
+
+            Inventory inventory =
+                    player.getInventory();
+
+
+            /*
+             * Find an empty slot for the Totem.
+             */
+            for (
+                    int slot = 0;
+                    slot < inventory.getContainerSize();
+                    slot++
+            ) {
+
+                if (inventory.getItem(slot).isEmpty()) {
+
+                    /*
+                     * Move Totem into the empty slot.
+                     */
+                    inventory.setItem(
+                            slot,
+                            offhand
+                    );
+
+
+                    /*
+                     * Restore shield.
+                     */
+                    player.setItemSlot(
+                            EquipmentSlot.OFFHAND,
+                            savedShield
+                    );
+
+
+                    /*
+                     * Verify shield actually returned.
+                     */
+                    ItemStack verify =
+                            player.getItemBySlot(
+                                    EquipmentSlot.OFFHAND
+                            );
+
+
+                    if (verify.is(Items.SHIELD)) {
+
+                        finishRestore();
+                    }
+
+                    return;
+                }
+            }
+
+
+            /*
+             * ====================================================
+             * INVENTORY FULL
+             * ====================================================
+             *
+             * IMPORTANT:
+             *
+             * We DO NOT overwrite the selected hotbar slot.
+             *
+             * The previous version could destroy/replace the
+             * player's selected item here.
+             *
+             * Instead:
+             *
+             *   Totem stays safely in offhand.
+             *   Shield stays saved.
+             *   We wait for an inventory slot to become available.
+             *
+             * Next tick we'll try again.
+             */
+            return;
+        }
+    }
+
+
+    /*
+     * ============================================================
+     * FINISH RESTORE
+     * ============================================================
+     */
+
+    private void finishRestore() {
+
+        emergencyMode = false;
+
+        shieldSaved = false;
 
         savedShield = ItemStack.EMPTY;
 
-        return true;
+        operationDelay =
+                POST_OPERATION_DELAY;
+    }
+
+
+    /*
+     * ============================================================
+     * CLEAR STATE
+     * ============================================================
+     */
+
+    private void clearEmergencyState() {
+
+        emergencyMode = false;
+
+        shieldSaved = false;
+
+        savedShield = ItemStack.EMPTY;
+
+        operationDelay = 0;
     }
 }
